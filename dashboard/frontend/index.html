@@ -1,0 +1,1708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>CareSense AI</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        .room-container {
+            position: relative;
+            width: 100%;
+            max-width: 1100px;
+            height: 620px;
+            margin: auto;
+            border-radius: 24px;
+            overflow: hidden;
+
+            background: radial-gradient(circle at center,
+            rgba(0, 255, 120, .08) 0%,
+            rgba(0, 0, 0, 0) 45%),
+            linear-gradient(
+                    180deg,
+                    #071127 0%,
+                    #030816 100%
+            );
+
+            border: 1px solid rgba(0, 255, 120, .20);
+
+            box-shadow: 0 0 40px rgba(0, 255, 120, .08),
+            inset 0 0 60px rgba(0, 255, 120, .03);
+        }
+
+        .room-container::before {
+            content: "";
+
+            position: absolute;
+            inset: 0;
+
+            background-image: linear-gradient(
+                    rgba(0, 255, 120, .05) 1px,
+                    transparent 1px
+            ),
+            linear-gradient(
+                    90deg,
+                    rgba(0, 255, 120, .05) 1px,
+                    transparent 1px
+            );
+
+            background-size: 40px 40px;
+
+            pointer-events: none;
+        }
+
+        .room-object {
+            position: absolute;
+            font-size: 64px;
+            filter: drop-shadow(0 0 8px rgba(0, 255, 120, .5));
+        }
+
+        .patient-avatar {
+            position: absolute;
+
+            width: 120px;
+            height: 220px;
+
+            transition: all 1.5s ease;
+
+            z-index: 100;
+        }
+
+        .skeleton-node {
+            position: absolute;
+
+            width: 12px;
+            height: 12px;
+
+            border-radius: 50%;
+
+            background: #8dff6d;
+
+            box-shadow: 0 0 8px #8dff6d,
+            0 0 15px #8dff6d;
+        }
+
+        .skeleton-line {
+            position: absolute;
+
+            background: #8dff6d;
+
+            box-shadow: 0 0 8px #8dff6d;
+
+            transform-origin: left center;
+        }
+
+        .csi-router {
+            position: absolute;
+
+            left: 25px;
+            top: 25px;
+
+            font-size: 52px;
+
+            color: #8dff6d;
+
+            text-shadow: 0 0 12px #8dff6d;
+        }
+
+        .csi-receiver {
+            position: absolute;
+
+            right: 25px;
+            bottom: 25px;
+
+            font-size: 52px;
+
+            color: #8dff6d;
+
+            text-shadow: 0 0 12px #8dff6d;
+        }
+
+        .csi-line {
+            position: absolute;
+
+            border-top: 2px dashed rgba(141, 255, 109, .45);
+
+            transform-origin: left center;
+
+            pointer-events: none;
+        }
+
+        .digital-panel {
+            margin-top: 20px;
+
+            padding: 20px;
+
+            border-radius: 18px;
+
+            background: rgba(0, 255, 120, .05);
+
+            border: 1px solid rgba(0, 255, 120, .15);
+        }
+
+        .digital-panel strong {
+            color: #8dff6d;
+        }
+
+        .room-title {
+            color: #8dff6d;
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 12px;
+            text-shadow: 0 0 12px rgba(141, 255, 109, .4);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Inter, Arial, sans-serif;
+            background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.35), transparent 30%),
+            radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.25), transparent 30%),
+            #050816;
+            color: #ffffff;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid rgba(148, 163, 184, 0.15);
+            padding: 28px 22px;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 800;
+            color: #60a5fa;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #94a3b8;
+            font-size: 13px;
+            margin-bottom: 35px;
+        }
+
+        .nav-item {
+            padding: 14px 16px;
+            border-radius: 14px;
+            margin-bottom: 12px;
+            color: #cbd5e1;
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .nav-item.active {
+            background: linear-gradient(135deg, #2563eb, #06b6d4);
+            color: white;
+            box-shadow: 0 0 25px rgba(37, 99, 235, 0.45);
+        }
+
+        .main {
+            padding: 30px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 28px;
+        }
+
+        .title h1 {
+            margin: 0;
+            font-size: 32px;
+        }
+
+        .title p {
+            margin: 8px 0 0;
+            color: #94a3b8;
+        }
+
+        .live-badge {
+            padding: 10px 16px;
+            border-radius: 999px;
+            background: rgba(34, 197, 94, 0.15);
+            color: #4ade80;
+            border: 1px solid rgba(34, 197, 94, 0.35);
+            font-weight: 700;
+        }
+
+        .control-panel {
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 24px;
+            padding: 20px;
+            margin-bottom: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .control-title {
+            font-weight: 800;
+            color: #93c5fd;
+        }
+
+        .mode-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .mode-btn {
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            background: rgba(255, 255, 255, 0.06);
+            color: #e5e7eb;
+            padding: 10px 14px;
+            border-radius: 999px;
+            cursor: pointer;
+            font-weight: 700;
+        }
+
+        .mode-btn:hover {
+            background: rgba(96, 165, 250, 0.20);
+            border-color: rgba(96, 165, 250, 0.55);
+        }
+
+        .mode-btn.active {
+            background: linear-gradient(135deg, #2563eb, #06b6d4);
+            border-color: transparent;
+            box-shadow: 0 0 18px rgba(37, 99, 235, 0.45);
+        }
+
+        .current-mode {
+            color: #cbd5e1;
+            font-size: 14px;
+        }
+
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 18px;
+            margin-bottom: 22px;
+        }
+
+        .card {
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 24px;
+            padding: 22px;
+            box-shadow: 0 25px 70px rgba(0, 0, 0, 0.25);
+        }
+
+        .label {
+            color: #94a3b8;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        .metric {
+            font-size: 32px;
+            font-weight: 800;
+        }
+
+        .unit {
+            color: #94a3b8;
+            font-size: 14px;
+        }
+
+        .risk-normal {
+            color: #22c55e;
+        }
+
+        .risk-warning {
+            color: #f59e0b;
+        }
+
+        .risk-critical {
+            color: #ef4444;
+        }
+
+        .risk-no_patient {
+            color: #94a3b8;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 22px;
+        }
+
+        .panel {
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 24px;
+            padding: 24px;
+        }
+
+        .panel h2 {
+            margin-top: 0;
+            font-size: 20px;
+        }
+
+        .agent-box {
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.24), rgba(6, 182, 212, 0.16));
+            border-radius: 20px;
+            padding: 22px;
+            border: 1px solid rgba(96, 165, 250, 0.25);
+        }
+
+        .agent-title {
+            color: #93c5fd;
+            font-weight: 800;
+            margin-bottom: 12px;
+        }
+
+        .summary {
+            color: #e5e7eb;
+            line-height: 1.7;
+        }
+
+        .action {
+            margin-top: 16px;
+            padding: 14px;
+            border-radius: 14px;
+            background: rgba(2, 6, 23, 0.45);
+            color: #bae6fd;
+        }
+
+        .timeline-item {
+            border-left: 3px solid #38bdf8;
+            padding-left: 14px;
+            margin-bottom: 18px;
+            color: #cbd5e1;
+        }
+
+        .timestamp {
+            color: #64748b;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        canvas {
+            max-height: 280px;
+        }
+
+        .digital-twin-showcase {
+            background: rgba(6, 12, 30, 0.92);
+            border: 1px solid rgba(141, 255, 109, .25);
+            border-radius: 24px;
+            padding: 24px;
+        }
+
+        .digital-twin-layout {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 22px;
+            align-items: stretch;
+        }
+
+        .digital-left-panel {
+            background: rgba(3, 10, 26, .85);
+            border: 1px solid rgba(141, 255, 109, .20);
+            border-radius: 18px;
+            padding: 20px;
+        }
+
+        .room-title {
+            color: #8dff6d;
+            font-size: 26px;
+            font-weight: 900;
+            margin-bottom: 8px;
+        }
+
+        .digital-subtitle {
+            color: #cbd5e1;
+            margin-bottom: 24px;
+        }
+
+        .digital-status-card,
+        .digital-insight-card,
+        .bottom-panel {
+            background: rgba(2, 8, 20, .75);
+            border: 1px solid rgba(141, 255, 109, .18);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .digital-status-card div,
+        .insight-row {
+            margin-bottom: 13px;
+            font-size: 15px;
+        }
+
+        .digital-status-card span {
+            color: #8dff6d;
+        }
+
+        .insight-title {
+            color: #8dff6d;
+            font-weight: 900;
+            margin-bottom: 14px;
+        }
+
+        .insight-row small {
+            display: block;
+            color: #94a3b8;
+            margin-top: 4px;
+        }
+
+        .digital-main-room {
+            border-radius: 22px;
+            border: 1px solid rgba(141, 255, 109, .25);
+            padding: 16px;
+            background: rgba(1, 6, 18, .65);
+        }
+
+        .room-container {
+            position: relative;
+            width: 100%;
+            height: 560px;
+            border-radius: 18px;
+            overflow: hidden;
+            background: radial-gradient(circle at center, rgba(0, 255, 120, .13), transparent 35%),
+            linear-gradient(180deg, #061022 0%, #020713 100%);
+            border: 1px solid rgba(141, 255, 109, .28);
+        }
+
+        .room-container::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background-image: linear-gradient(rgba(0, 255, 120, .06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(0, 255, 120, .06) 1px, transparent 1px);
+            background-size: 52px 52px;
+            pointer-events: none;
+        }
+
+        .router-label,
+        .receiver-label {
+            position: absolute;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            color: #9cff75;
+            font-weight: 900;
+            z-index: 20;
+        }
+
+        .router-label {
+            left: 28px;
+            top: 28px;
+        }
+
+        .receiver-label {
+            right: 34px;
+            bottom: 32px;
+        }
+
+        .router-icon,
+        .receiver-icon {
+            width: 52px;
+            height: 36px;
+            border-radius: 8px;
+            background: #8dff6d;
+            color: #071127;
+            display: grid;
+            place-items: center;
+            box-shadow: 0 0 24px rgba(141, 255, 109, .8);
+        }
+
+        .neon-bed {
+            position: absolute;
+            left: 70px;
+            top: 330px;
+            width: 180px;
+            height: 90px;
+        }
+
+        .bed-head {
+            position: absolute;
+            left: 0;
+            top: 4px;
+            width: 16px;
+            height: 74px;
+            border: 2px solid #8dff6d;
+            border-radius: 8px;
+        }
+
+        .bed-body {
+            position: absolute;
+            left: 16px;
+            top: 28px;
+            width: 155px;
+            height: 45px;
+            border: 2px solid #8dff6d;
+            border-radius: 10px;
+            box-shadow: 0 0 18px rgba(141, 255, 109, .35);
+        }
+
+        .neon-bed span,
+        .neon-chair span,
+        .neon-door span {
+            color: #8dff6d;
+            font-weight: 900;
+        }
+
+        .neon-bed span {
+            position: absolute;
+            left: 58px;
+            top: 88px;
+        }
+
+        .neon-chair {
+            position: absolute;
+            right: 230px;
+            bottom: 145px;
+            width: 90px;
+            height: 100px;
+        }
+
+        .chair-back {
+            width: 60px;
+            height: 45px;
+            border: 2px solid #8dff6d;
+            transform: skew(-7deg);
+        }
+
+        .chair-seat {
+            margin-top: 6px;
+            width: 75px;
+            height: 35px;
+            border: 2px solid #8dff6d;
+            transform: skew(-8deg);
+        }
+
+        .neon-door {
+            position: absolute;
+            right: 55px;
+            top: 78px;
+        }
+
+        .door-body {
+            width: 56px;
+            height: 105px;
+            border: 2px solid #8dff6d;
+            border-radius: 4px;
+        }
+
+        .csi-line {
+            position: absolute;
+            border-top: 1.5px dashed rgba(141, 255, 109, .55);
+            transform-origin: left center;
+            z-index: 5;
+            animation: csiPulse 2s infinite;
+        }
+
+        .beam-one {
+            left: 65px;
+            top: 82px;
+            width: 520px;
+            transform: rotate(27deg);
+        }
+
+        .beam-two {
+            left: 65px;
+            top: 82px;
+            width: 790px;
+            transform: rotate(13deg);
+        }
+
+        .beam-three {
+            left: 65px;
+            top: 82px;
+            width: 700px;
+            transform: rotate(47deg);
+        }
+
+        .beam-four {
+            right: 75px;
+            bottom: 70px;
+            width: 520px;
+            transform: rotate(205deg);
+        }
+
+        @keyframes csiPulse {
+            0% {
+                opacity: .25;
+            }
+            50% {
+                opacity: .95;
+            }
+            100% {
+                opacity: .25;
+            }
+        }
+
+        .signal-ring {
+            position: absolute;
+            left: 50%;
+            top: 72%;
+            transform: translate(-50%, -50%);
+            border: 1px solid rgba(141, 255, 109, .3);
+            border-radius: 50%;
+            animation: ringPulse 3s infinite;
+        }
+
+        .ring-one {
+            width: 130px;
+            height: 45px;
+        }
+
+        .ring-two {
+            width: 210px;
+            height: 80px;
+            animation-delay: .5s;
+        }
+
+        .ring-three {
+            width: 300px;
+            height: 120px;
+            animation-delay: 1s;
+        }
+
+        @keyframes ringPulse {
+            0% {
+                opacity: .15;
+                transform: translate(-50%, -50%) scale(.85);
+            }
+            50% {
+                opacity: .75;
+                transform: translate(-50%, -50%) scale(1);
+            }
+            100% {
+                opacity: .15;
+                transform: translate(-50%, -50%) scale(1.15);
+            }
+        }
+
+        .patient-avatar {
+            position: absolute;
+            width: 160px;
+            height: 310px;
+            transition: all 1.5s ease;
+            z-index: 100;
+            filter: drop-shadow(0 0 24px rgba(141, 255, 109, .85));
+        }
+
+        .skeleton-node {
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #a8ff72;
+            box-shadow: 0 0 10px #a8ff72,
+            0 0 24px rgba(141, 255, 109, .85);
+        }
+
+        .skeleton-line {
+            position: absolute;
+            height: 2px;
+            background: #a8ff72;
+            box-shadow: 0 0 12px rgba(141, 255, 109, .9);
+            transform-origin: left center;
+        }
+
+        .head {
+            left: 72px;
+            top: 0;
+            width: 22px;
+            height: 22px;
+        }
+
+        .neck {
+            left: 76px;
+            top: 34px;
+        }
+
+        .chest {
+            left: 76px;
+            top: 72px;
+        }
+
+        .abdomen {
+            left: 76px;
+            top: 112px;
+        }
+
+        .hip {
+            left: 76px;
+            top: 155px;
+        }
+
+        .left-shoulder {
+            left: 38px;
+            top: 72px;
+        }
+
+        .right-shoulder {
+            left: 114px;
+            top: 72px;
+        }
+
+        .left-elbow {
+            left: 24px;
+            top: 125px;
+        }
+
+        .right-elbow {
+            left: 128px;
+            top: 125px;
+        }
+
+        .left-hand {
+            left: 18px;
+            top: 175px;
+        }
+
+        .right-hand {
+            left: 136px;
+            top: 175px;
+        }
+
+        .left-knee {
+            left: 55px;
+            top: 225px;
+        }
+
+        .right-knee {
+            left: 100px;
+            top: 225px;
+        }
+
+        .left-foot {
+            left: 42px;
+            top: 285px;
+        }
+
+        .right-foot {
+            left: 112px;
+            top: 285px;
+        }
+
+        .line-head-neck {
+            left: 82px;
+            top: 20px;
+            width: 28px;
+            transform: rotate(90deg);
+        }
+
+        .line-neck-chest {
+            left: 82px;
+            top: 45px;
+            width: 35px;
+            transform: rotate(90deg);
+        }
+
+        .line-chest-abdomen {
+            left: 82px;
+            top: 83px;
+            width: 36px;
+            transform: rotate(90deg);
+        }
+
+        .line-abdomen-hip {
+            left: 82px;
+            top: 123px;
+            width: 40px;
+            transform: rotate(90deg);
+        }
+
+        .line-shoulders {
+            left: 45px;
+            top: 80px;
+            width: 80px;
+        }
+
+        .line-left-upper-arm {
+            left: 40px;
+            top: 82px;
+            width: 60px;
+            transform: rotate(105deg);
+        }
+
+        .line-left-lower-arm {
+            left: 28px;
+            top: 130px;
+            width: 52px;
+            transform: rotate(98deg);
+        }
+
+        .line-right-upper-arm {
+            left: 120px;
+            top: 82px;
+            width: 60px;
+            transform: rotate(75deg);
+        }
+
+        .line-right-lower-arm {
+            left: 132px;
+            top: 130px;
+            width: 52px;
+            transform: rotate(82deg);
+        }
+
+        .line-left-upper-leg {
+            left: 80px;
+            top: 165px;
+            width: 75px;
+            transform: rotate(112deg);
+        }
+
+        .line-left-lower-leg {
+            left: 58px;
+            top: 230px;
+            width: 62px;
+            transform: rotate(102deg);
+        }
+
+        .line-right-upper-leg {
+            left: 85px;
+            top: 165px;
+            width: 75px;
+            transform: rotate(68deg);
+        }
+
+        .line-right-lower-leg {
+            left: 105px;
+            top: 230px;
+            width: 62px;
+            transform: rotate(78deg);
+        }
+
+        .digital-bottom-panels {
+            display: grid;
+            grid-template-columns: 1.2fr .8fr .8fr;
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .quote {
+            color: #8dff6d;
+            font-style: italic;
+            margin-bottom: 14px;
+        }
+
+        .pipeline {
+            color: #cbd5e1;
+        }
+
+        .risk-green .skeleton-node,
+        .risk-green .skeleton-line {
+            background: #8dff6d;
+        }
+
+        .risk-yellow .skeleton-node,
+        .risk-yellow .skeleton-line {
+            background: #facc15;
+            box-shadow: 0 0 18px #facc15;
+        }
+
+        .risk-red .skeleton-node,
+        .risk-red .skeleton-line,
+        .risk-red-pulse .skeleton-node,
+        .risk-red-pulse .skeleton-line {
+            background: #ef4444;
+            box-shadow: 0 0 18px #ef4444;
+        }
+
+        .risk-red-pulse {
+            animation: fallPulse 1s infinite;
+        }
+
+        @keyframes fallPulse {
+            0% {
+                filter: drop-shadow(0 0 10px #ef4444);
+            }
+            50% {
+                filter: drop-shadow(0 0 35px #ef4444);
+            }
+            100% {
+                filter: drop-shadow(0 0 10px #ef4444);
+            }
+        }
+
+        .pose-fallen {
+            transform: rotate(90deg) scale(0.9);
+        }
+
+        .pose-sleeping {
+            transform: rotate(90deg) scale(0.85);
+        }
+
+        .pose-sitting {
+            transform: scale(0.9) translateY(30px);
+        }
+
+        .pose-walking {
+            transform: rotate(-4deg);
+        }
+
+        .pose-standing {
+            transform: rotate(0deg);
+        }
+    </style>
+</head>
+
+<body>
+<div class="layout">
+
+    <aside class="sidebar">
+        <div class="logo">CareSense AI</div>
+        <div class="subtitle">Non-wearable patient monitoring demo</div>
+
+        <div class="nav-item active">Live Monitoring</div>
+        <div class="nav-item">AI Agent</div>
+        <div class="nav-item">Risk Engine</div>
+        <div class="nav-item">Odoo Connector</div>
+        <div class="nav-item">Voice Assistant</div>
+    </aside>
+
+    <main class="main">
+
+        <div class="topbar">
+            <div class="title">
+                <h1>AI Patient Monitoring Dashboard</h1>
+                <p>Simulated WiFi CSI sensing pipeline with medical AI agent analysis</p>
+            </div>
+
+            <div class="live-badge">● LIVE SIMULATION</div>
+        </div>
+
+        <div class="control-panel">
+            <div>
+                <div class="control-title">Demo Control Panel</div>
+                <div class="current-mode">Current Mode: <strong id="currentMode">AUTO</strong></div>
+            </div>
+
+            <div class="mode-buttons">
+                <button class="mode-btn active" data-mode="auto" onclick="setMode('auto')">Auto</button>
+                <button class="mode-btn" data-mode="normal" onclick="setMode('normal')">Normal</button>
+                <button class="mode-btn" data-mode="warning" onclick="setMode('warning')">Warning</button>
+                <button class="mode-btn" data-mode="critical" onclick="setMode('critical')">Critical</button>
+                <button class="mode-btn" data-mode="fall" onclick="setMode('fall')">Simulate Fall</button>
+                <button class="mode-btn" data-mode="no_patient" onclick="setMode('no_patient')">No Patient</button>
+            </div>
+        </div>
+
+        <div class="cards">
+            <div class="card">
+                <div class="label">Risk Level</div>
+                <div id="riskLevel" class="metric">--</div>
+                <div class="unit">AI risk engine</div>
+            </div>
+
+            <div class="card">
+                <div class="label">Movement</div>
+                <div id="movement" class="metric">--</div>
+                <div class="unit">CSI movement index</div>
+            </div>
+
+            <div class="card">
+                <div class="label">Breathing Rate</div>
+                <div id="breathing" class="metric">--</div>
+                <div class="unit">breaths / min</div>
+            </div>
+
+            <div class="card">
+                <div class="label">Heart Rate</div>
+                <div id="heartRate" class="metric">--</div>
+                <div class="unit">bpm simulated</div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="panel">
+                <h2>Live WiFi CSI Signal Trend</h2>
+                <canvas id="signalChart"></canvas>
+            </div>
+
+            <div class="panel">
+                <h2>AI Agent Summary</h2>
+                <div class="agent-box">
+                    <div class="agent-title">CareSense Medical Agent</div>
+                    <div id="agentSummary" class="summary">Waiting for live signal...</div>
+                    <div id="agentAction" class="action">Recommended action will appear here.</div>
+                </div>
+            </div>
+        </div>
+
+        <br>
+
+        <br>
+
+        <div class="grid">
+            <div class="panel">
+                <h2>WiFi CSI Amplitude</h2>
+                <canvas id="csiAmplitudeChart"></canvas>
+            </div>
+
+            <div class="panel">
+                <h2>WiFi CSI Phase</h2>
+                <canvas id="csiPhaseChart"></canvas>
+            </div>
+        </div>
+        <br>
+
+        <div class="panel">
+            <h2>AI Signal Analysis</h2>
+
+            <div class="cards">
+
+                <div class="card">
+                    <div class="label">CSI Pattern</div>
+                    <div id="csiPattern" class="metric">--</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Motion Intensity</div>
+                    <div id="motionIntensity" class="metric">--</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Phase Instability</div>
+                    <div id="phaseInstability" class="metric">--</div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Fall Spike Score</div>
+                    <div id="fallSpikeScore" class="metric">--</div>
+                </div>
+
+            </div>
+
+            <br>
+
+            <div class="agent-box">
+                <div class="agent-title">Breathing Analysis</div>
+
+                <div id="breathingRegularity">
+                    Waiting...
+                </div>
+            </div>
+
+        </div>
+
+        <br>
+
+        <br>
+
+        <div class="panel digital-twin-showcase">
+
+            <div class="digital-twin-layout">
+
+                <!-- LEFT STATUS PANEL -->
+                <div class="digital-left-panel">
+
+                    <div class="room-title">
+                        Digital Twin Room
+                    </div>
+
+                    <div class="digital-subtitle">
+                        AI-Powered Patient Monitoring
+                    </div>
+
+                    <div class="digital-status-card">
+
+                        <div>
+                            🛡️ <strong>Status:</strong>
+                            <span id="dtStatus">Stable</span>
+                        </div>
+
+                        <div>
+                            🚶 <strong>Activity:</strong>
+                            <span id="dtActivity">standing</span>
+                        </div>
+
+                        <div>
+                            📍 <strong>Location:</strong>
+                            <span id="dtLocation">center_room</span>
+                        </div>
+
+                        <div>
+                            ❤️ <strong>Heart Rate:</strong>
+                            <span id="dtHeartRate">--</span> bpm
+                        </div>
+
+                        <div>
+                            🫁 <strong>Breathing:</strong>
+                            <span id="dtBreathing">--</span> /min
+                        </div>
+
+                        <div>
+                            🌡️ <strong>Temperature:</strong>
+                            <span id="dtTemperature">--</span> °C
+                        </div>
+
+                        <div>
+                            O₂ <strong>Oxygen:</strong>
+                            <span id="dtOxygen">--</span> %
+                        </div>
+
+                    </div>
+
+                    <div class="digital-insight-card">
+                        <div class="insight-title">
+                            AI + DATA INSIGHTS
+                        </div>
+
+                        <div class="insight-row">
+                            📡 WiFi CSI Analysis
+                            <small>Real-time motion & vital signs</small>
+                        </div>
+
+                        <div class="insight-row">
+                            ⚙️ ML / AI Models
+                            <small>Movement • Fall • Risk</small>
+                        </div>
+
+                        <div class="insight-row">
+                            🧬 Data Analytics
+                            <small>Patterns • Trends • Predictions</small>
+                        </div>
+
+                        <div class="insight-row">
+                            🏥 Odoo Integration
+                            <small>Smart Healthcare Workflow</small>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- MAIN ROOM -->
+                <div class="digital-main-room">
+
+                    <div class="room-container">
+
+                        <!-- WiFi Router -->
+                        <div class="router-label">
+                            <div class="router-icon">▣</div>
+                            <span>WiFi CSI<br>Router</span>
+                        </div>
+
+                        <!-- CSI Receiver -->
+                        <div class="receiver-label">
+                            <div class="receiver-icon">▣</div>
+                            <span>CSI<br>Receiver</span>
+                        </div>
+
+                        <!-- Bed -->
+                        <div class="neon-bed">
+                            <div class="bed-head"></div>
+                            <div class="bed-body"></div>
+                            <span>Bed</span>
+                        </div>
+
+                        <!-- Chair -->
+                        <div class="neon-chair">
+                            <div class="chair-back"></div>
+                            <div class="chair-seat"></div>
+                            <span>Chair</span>
+                        </div>
+
+                        <!-- Door -->
+                        <div class="neon-door">
+                            <div class="door-body"></div>
+                            <span>Door</span>
+                        </div>
+
+                        <!-- CSI Tracking Beams -->
+                        <div class="csi-line beam-one"></div>
+                        <div class="csi-line beam-two"></div>
+                        <div class="csi-line beam-three"></div>
+                        <div class="csi-line beam-four"></div>
+
+                        <!-- Floor Signal Rings -->
+                        <div class="signal-ring ring-one"></div>
+                        <div class="signal-ring ring-two"></div>
+                        <div class="signal-ring ring-three"></div>
+
+                        <!-- Skeleton Patient -->
+                        <div
+                                id="patientAvatar"
+                                class="patient-avatar"
+                                style="left:520px;top:220px;"
+                        >
+
+                            <div class="skeleton-node head"></div>
+                            <div class="skeleton-node neck"></div>
+                            <div class="skeleton-node chest"></div>
+                            <div class="skeleton-node abdomen"></div>
+                            <div class="skeleton-node hip"></div>
+
+                            <div class="skeleton-node left-shoulder"></div>
+                            <div class="skeleton-node right-shoulder"></div>
+                            <div class="skeleton-node left-elbow"></div>
+                            <div class="skeleton-node right-elbow"></div>
+                            <div class="skeleton-node left-hand"></div>
+                            <div class="skeleton-node right-hand"></div>
+
+                            <div class="skeleton-node left-knee"></div>
+                            <div class="skeleton-node right-knee"></div>
+                            <div class="skeleton-node left-foot"></div>
+                            <div class="skeleton-node right-foot"></div>
+
+                            <div class="skeleton-line line-head-neck"></div>
+                            <div class="skeleton-line line-neck-chest"></div>
+                            <div class="skeleton-line line-chest-abdomen"></div>
+                            <div class="skeleton-line line-abdomen-hip"></div>
+
+                            <div class="skeleton-line line-shoulders"></div>
+                            <div class="skeleton-line line-left-upper-arm"></div>
+                            <div class="skeleton-line line-left-lower-arm"></div>
+                            <div class="skeleton-line line-right-upper-arm"></div>
+                            <div class="skeleton-line line-right-lower-arm"></div>
+
+                            <div class="skeleton-line line-left-upper-leg"></div>
+                            <div class="skeleton-line line-left-lower-leg"></div>
+                            <div class="skeleton-line line-right-upper-leg"></div>
+                            <div class="skeleton-line line-right-lower-leg"></div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+            <!-- BOTTOM INFO PANELS -->
+            <div class="digital-bottom-panels">
+
+                <div class="bottom-panel">
+                    <div class="quote">
+                        “Turning intelligent data into proactive care.”
+                    </div>
+
+                    <div class="pipeline">
+                        WiFi CSI Data → Signal Processing → Feature Extraction → AI Models → Alerts
+                    </div>
+                </div>
+
+                <div class="bottom-panel">
+                    <strong>BIO-SIGNALS & NETWORKS</strong>
+                    <br>
+                    Motion • Breathing • Signal Patterns • Risk Prediction
+                </div>
+
+                <div class="bottom-panel">
+                    <strong>CARE WORKFLOW</strong>
+                    <br>
+                    Monitoring • AI Agent • Voice Assistant • Odoo Integration
+                </div>
+
+            </div>
+
+            <div
+                    id="patientActivity"
+                    class="digital-panel"
+                    style="display:none;"
+            >
+                Waiting for WiFi CSI analysis...
+            </div>
+
+        </div>
+        <div class="panel">
+            <h2>Ask CareSense AI</h2>
+
+            <div class="agent-box">
+                <div class="agent-title">Medical AI Chat Agent</div>
+
+                <input
+                        id="chatInput"
+                        type="text"
+                        placeholder="Ask: What is the patient status?"
+                        style="width:100%;padding:14px;border-radius:14px;border:none;margin-bottom:12px;"
+                >
+
+                <button
+                        onclick="askAgent()"
+                        class="mode-btn"
+                >
+                    Ask Agent
+                </button>
+
+                <button onclick="startVoiceInput()" class="mode-btn">
+                    🎤 Start Voice
+                </button>
+
+                <button onclick="speakLastAnswer()" class="mode-btn">
+                    🔊 Speak Answer
+                </button>
+
+                <div
+                        id="chatAnswer"
+                        class="action"
+                        style="margin-top:16px;"
+                >
+                    Agent response will appear here.
+                </div>
+            </div>
+        </div>
+
+        <br>
+
+        <div class="panel">
+            <h2>Event Timeline</h2>
+            <div id="timeline"></div>
+        </div>
+
+    </main>
+</div>
+
+<script>
+    const ctx = document.getElementById("signalChart");
+
+    const chart = new Chart(ctx, {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [
+                {label: "Movement", data: [], tension: 0.45},
+                {label: "Signal Strength", data: [], tension: 0.45}
+            ]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {labels: {color: "#cbd5e1"}}
+            },
+            scales: {
+                x: {
+                    ticks: {color: "#94a3b8"},
+                    grid: {color: "rgba(148,163,184,0.1)"}
+                },
+                y: {
+                    ticks: {color: "#94a3b8"},
+                    grid: {color: "rgba(148,163,184,0.1)"},
+                    min: 0,
+                    max: 1
+                }
+            }
+        }
+    });
+
+    const ampCtx = document.getElementById("csiAmplitudeChart");
+
+    const amplitudeChart = new Chart(ampCtx, {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [{
+                label: "CSI Amplitude",
+                data: [],
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true
+        }
+    });
+
+
+    const phaseCtx = document.getElementById("csiPhaseChart");
+
+    const phaseChart = new Chart(phaseCtx, {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [{
+                label: "CSI Phase",
+                data: [],
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true
+        }
+    });
+
+    async function setMode(mode) {
+        await fetch(`/dashboard/mode/${mode}`, {
+            method: "POST"
+        });
+
+        document.querySelectorAll(".mode-btn").forEach(btn => {
+            btn.classList.remove("active");
+            if (btn.dataset.mode === mode) {
+                btn.classList.add("active");
+            }
+        });
+
+        document.getElementById("currentMode").innerText = mode.toUpperCase();
+
+        await loadDashboard();
+    }
+
+
+    async function askAgent() {
+        const input = document.getElementById("chatInput");
+        const answerBox = document.getElementById("chatAnswer");
+
+        const question = input.value.trim();
+
+        if (!question) {
+            answerBox.innerText = "Please type a question first.";
+            return;
+        }
+
+        answerBox.innerText = "CareSense AI is analyzing...";
+
+        const response = await fetch("/chat", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                question: question
+            })
+        });
+
+        const data = await response.json();
+
+        answerBox.innerText = data.answer || "No answer returned.";
+
+// Auto Speak Answer
+        speechSynthesis.cancel();
+
+        const utterance = new SpeechSynthesisUtterance(
+            data.answer || "No answer returned."
+        );
+
+        utterance.lang = "en-US";
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+
+        speechSynthesis.speak(utterance);
+    }
+
+    async function loadDashboard() {
+        const response = await fetch("/dashboard/live");
+        const data = await response.json();
+
+        const sensor = data.sensor_data;
+        const wifiCSI = sensor.wifi_csi;
+        const risk = data.risk_assessment;
+        const agent = data.ai_agent;
+        const csiFeatures = data.csi_features;
+        const derivedFeatures = csiFeatures ? csiFeatures.derived_features : null;
+        const twin = data.digital_twin;
+
+        const currentMode = data.current_mode || sensor.mode || "auto";
+
+        document.getElementById("currentMode").innerText =
+            currentMode.toUpperCase();
+
+        const riskElement = document.getElementById("riskLevel");
+        riskElement.innerText = risk.risk_level.toUpperCase();
+        riskElement.className = "metric risk-" + risk.risk_level;
+
+        document.getElementById("movement").innerText =
+            sensor.movement_level;
+
+        document.getElementById("breathing").innerText =
+            sensor.breathing_rate;
+
+        document.getElementById("heartRate").innerText =
+            sensor.heart_rate;
+
+        document.getElementById("agentSummary").innerText =
+            agent.summary;
+
+        document.getElementById("agentAction").innerText =
+            agent.recommended_action;
+
+        if (derivedFeatures) {
+            document.getElementById("csiPattern").innerText =
+                derivedFeatures.csi_pattern;
+
+            document.getElementById("motionIntensity").innerText =
+                derivedFeatures.motion_intensity;
+
+            document.getElementById("phaseInstability").innerText =
+                derivedFeatures.phase_instability;
+
+            document.getElementById("fallSpikeScore").innerText =
+                derivedFeatures.fall_spike_score;
+
+            document.getElementById("breathingRegularity").innerText =
+                derivedFeatures.breathing_regularity;
+        }
+
+        if (twin) {
+            const patient = twin.patient;
+            const avatar = document.getElementById("patientAvatar");
+            const activityBox = document.getElementById("patientActivity");
+
+            document.getElementById("dtStatus").innerText =
+                patient.avatar.status_label;
+
+            document.getElementById("dtActivity").innerText =
+                patient.activity;
+
+            document.getElementById("dtLocation").innerText =
+                patient.location;
+
+            document.getElementById("dtHeartRate").innerText =
+                patient.vitals.heart_rate;
+
+            document.getElementById("dtBreathing").innerText =
+                patient.vitals.breathing_rate;
+
+            document.getElementById("dtTemperature").innerText =
+                patient.vitals.temperature;
+
+            document.getElementById("dtOxygen").innerText =
+                patient.vitals.oxygen_saturation;
+
+            if (avatar && patient) {
+                const poseClass = patient.pose_state.pose_class;
+                const riskColorClass = patient.pose_state.risk_color_class;
+
+                avatar.className = "patient-avatar " + poseClass + " " + riskColorClass;
+
+                avatar.style.left = patient.position.x + "px";
+                avatar.style.top = patient.position.y + "px";
+            }
+
+            if (activityBox && patient) {
+                activityBox.innerHTML = `
+                <strong>Status:</strong> ${patient.avatar.status_label}
+                <br>
+                <strong>Activity:</strong> ${patient.activity}
+                <br>
+                <strong>Location:</strong> ${patient.location}
+                <br>
+                <strong>Heart Rate:</strong> ${patient.vitals.heart_rate} bpm
+                <br>
+                <strong>Breathing:</strong> ${patient.vitals.breathing_rate} /min
+                <br>
+                <strong>Temperature:</strong> ${patient.vitals.temperature} °C
+                <br>
+                <strong>Oxygen:</strong> ${patient.vitals.oxygen_saturation} %
+            `;
+            }
+        }
+
+        const now = new Date().toLocaleTimeString();
+
+        chart.data.labels.push(now);
+        chart.data.datasets[0].data.push(sensor.movement_level);
+        chart.data.datasets[1].data.push(sensor.signal_strength);
+
+        if (chart.data.labels.length > 12) {
+            chart.data.labels.shift();
+            chart.data.datasets[0].data.shift();
+            chart.data.datasets[1].data.shift();
+        }
+
+        chart.update();
+
+        if (wifiCSI) {
+            amplitudeChart.data.labels =
+                wifiCSI.amplitude.map((_, i) => i);
+
+            amplitudeChart.data.datasets[0].data =
+                wifiCSI.amplitude;
+
+            amplitudeChart.update();
+
+            phaseChart.data.labels =
+                wifiCSI.phase.map((_, i) => i);
+
+            phaseChart.data.datasets[0].data =
+                wifiCSI.phase;
+
+            phaseChart.update();
+        }
+
+        const timeline = document.getElementById("timeline");
+
+        const item = document.createElement("div");
+        item.className = "timeline-item";
+        item.innerHTML = `
+        <div class="timestamp">${sensor.timestamp}</div>
+        <strong>${risk.risk_level.toUpperCase()}</strong>
+        - Mode: ${currentMode.toUpperCase()}
+        - Scenario: ${sensor.scenario}
+        - CSI: ${derivedFeatures ? derivedFeatures.csi_pattern : "N/A"}
+        - ${twin && twin.patient ? "Activity: " + twin.patient.activity : ""}
+        - ${agent.summary}
+    `;
+
+        timeline.prepend(item);
+
+        if (timeline.children.length > 6) {
+            timeline.removeChild(timeline.lastChild);
+        }
+    }
+
+    async function startVoiceInput() {
+
+        if (!('webkitSpeechRecognition' in window)) {
+            alert("Speech Recognition is not supported in this browser.");
+            return;
+        }
+
+        const recognition = new webkitSpeechRecognition();
+
+        recognition.lang = "en-US";
+        recognition.continuous = false;
+        recognition.interimResults = false;
+
+        recognition.start();
+
+        recognition.onresult = async function (event) {
+
+            const transcript =
+                event.results[0][0].transcript;
+
+            document.getElementById("chatInput").value =
+                transcript;
+
+            await askAgent();
+        };
+
+        recognition.onerror = function (error) {
+            console.error(error);
+        };
+    }
+
+    function speakLastAnswer() {
+
+        const answer =
+            document.getElementById("chatAnswer").innerText;
+
+        if (!answer) {
+            return;
+        }
+
+        speechSynthesis.cancel();
+
+        const utterance =
+            new SpeechSynthesisUtterance(answer);
+
+        utterance.lang = "en-US";
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+
+        speechSynthesis.speak(utterance);
+    }
+
+    loadDashboard();
+    setInterval(loadDashboard, 2500);
+</script>
+
+</body>
+</html>
