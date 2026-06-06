@@ -2,7 +2,7 @@ import os
 import json
 import requests
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 from dotenv import load_dotenv
 
@@ -36,129 +36,249 @@ class CareSenseLLMAgent:
         if self.gemini_api_key and genai:
             self.gemini_client = genai.Client(api_key=self.gemini_api_key)
 
+        self.current_patient_id: Optional[int] = None
+        self.current_patient_summary: Optional[Dict[str, Any]] = None
+
     def run(self, question: str, dashboard_payload: Dict[str, Any]) -> Dict[str, Any]:
         question = (question or "").strip()
-        intent = self._detect_intent(question)
         user_language = self._detect_language(question)
-        context = self._extract_context(dashboard_payload)
+        dashboard_context = self._extract_context(dashboard_payload)
 
-        if intent == "odoo_patient_search":
-            return self._run_odoo_patient_search(question, user_language)
-
-        prompt = self._build_prompt(
-            question=question,
-            intent=intent,
-            context=context,
-            dashboard_payload=dashboard_payload,
-            user_language=user_language,
-        )
-
-        provider_used = None
-        model_used = None
-        error_message = None
+        if not question:
+            return self._normal_response(
+                question=question,
+                answer="من فضلك اكتب سؤالك." if user_language == "ar" else "Please write your question.",
+                intent="empty",
+                provider="system",
+                model=None,
+                context=dashboard_context,
+                error=None,
+            )
 
         try:
-            if self.provider == "gemini":
-                answer = self._call_gemini(prompt)
-                provider_used = "gemini"
-                model_used = self.gemini_model
+            decision = self._decide_next_action(
+                question=question,
+                user_language=user_language,
+                dashboard_context=dashboard_context,
+            )
 
-            elif self.provider == "ollama":
-                answer = self._call_ollama(prompt)
-                provider_used = "ollama"
-                model_used = self.ollama_model
+            action = decision.get("action")
+            patient_query = decision.get("patient_query")
+            reason = decision.get("reason")
 
-            else:
-                try:
-                    answer = self._call_gemini(prompt)
-                    provider_used = "gemini"
-                    model_used = self.gemini_model
-                except Exception as gemini_error:
-                    error_message = str(gemini_error)
-                    answer = self._call_ollama(prompt)
-                    provider_used = "ollama"
-                    model_used = self.ollama_model
+            if action == "search_patient":
+                return self._tool_search_patient(
+                    question=question,
+                    patient_query=patient_query,
+                    user_language=user_language,
+                    reason=reason,
+                )
 
-            return {
-                "agent": self.agent_name,
-                "provider": provider_used,
-                "model": model_used,
-                "question": question,
-                "intent": intent,
-                "answer": answer,
-                "context": context,
-                "agent_trace": {
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "reasoning_mode": "llm_router",
-                    "data_source": self._data_source_for_intent(intent),
-                    "odoo_enabled": False,
-                    "fallback_error": error_message,
-                    "next_stage": self._next_stage_for_intent(intent),
-                },
-                "disclaimer": (
-                    "This is a simulated AI monitoring demo. "
-                    "It is not a medical diagnosis and must be verified by clinical staff."
+            if action == "answer_current_patient":
+                return self._answer_from_current_patient(
+                    question=question,
+                    user_language=user_language,
+                    dashboard_context=dashboard_context,
+                    reason=reason,
+                )
+
+            if action == "answer_dashboard":
+                return self._answer_from_dashboard(
+                    question=question,
+                    user_language=user_language,
+                    dashboard_context=dashboard_context,
+                    reason=reason,
+                )
+
+            if action == "general_chat":
+                return self._answer_general(
+                    question=question,
+                    user_language=user_language,
+                    dashboard_context=dashboard_context,
+                    reason=reason,
+                )
+
+            return self._normal_response(
+                question=question,
+                answer=(
+                    "أحتاج أن تبحث عن المريض أولاً. مثال: ابحث عن المريض Ahmed Ali."
+                    if user_language == "ar"
+                    else "Please search for a patient first. Example: search patient Ahmed Ali."
                 ),
-            }
+                intent="need_patient_context",
+                provider="system",
+                model=None,
+                context={
+                    "current_patient": self.current_patient_summary,
+                    "dashboard": dashboard_context,
+                    "planner_decision": decision,
+                },
+                error=None,
+            )
 
         except Exception as e:
-            if user_language == "ar":
-                answer = (
-                    "تعذر على CareSense AI الوصول إلى نموذج الذكاء الاصطناعي حالياً. "
-                    "تأكد أن Ollama يعمل محلياً وأن الموديل تم تحميله."
-                )
-            else:
-                answer = (
-                    "CareSense AI could not reach the AI model. "
-                    "Please make sure Ollama is running locally and the model is installed."
-                )
+            return self._normal_response(
+                question=question,
+                answer=(
+                    f"حدث خطأ أثناء تشغيل CareSense AI: {str(e)}"
+                    if user_language == "ar"
+                    else f"CareSense AI error: {str(e)}"
+                ),
+                intent="error",
+                provider="system",
+                model=None,
+                context={
+                    "current_patient": self.current_patient_summary,
+                    "dashboard": dashboard_context,
+                },
+                error=str(e),
+            )
 
-            return {
-                "agent": self.agent_name,
-                "provider": "none",
-                "model": None,
-                "question": question,
-                "intent": intent,
-                "answer": answer,
-                "error": str(e),
-                "context": context,
-                "disclaimer": "This is a simulated AI monitoring demo and not a medical diagnosis.",
+    # ------------------------------------------------------------------
+    # LLM PLANNER
+    # ------------------------------------------------------------------
+
+    def _decide_next_action(
+        self,
+        question: str,
+        user_language: str,
+        dashboard_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        current_patient_brief = None
+
+        if self.current_patient_summary:
+            profile = self.current_patient_summary.get("profile", {}) or {}
+            current_patient_brief = {
+                "id": profile.get("id"),
+                "name": profile.get("name"),
+                "reference": profile.get("reference"),
+                "ssn": profile.get("ssn"),
             }
 
-    def _run_odoo_patient_search(self, question: str, user_language: str) -> Dict[str, Any]:
-        try:
-            patient_query = self._extract_patient_search_query(question)
+        prompt = f"""
+You are the planner for CareSense AI.
 
-            if not patient_query:
-                answer = (
-                    "من فضلك اذكر اسم المريض أو رقم الهوية للبحث عنه في Odoo."
+You must decide what the system should do next.
+
+Available actions:
+1. search_patient
+   Use this when the user is asking to find, open, load, select, or start working with a patient.
+   Extract the patient name, ID, SSN, or reference into patient_query.
+
+2. answer_current_patient
+   Use this when the user asks anything about the currently selected patient.
+   This includes profile, vitals, diagnosis, treatment, clinical interpretation, appointments, or any follow-up using pronouns like he/she/his/her/هو/هي/حالته.
+
+3. answer_dashboard
+   Use this when the user asks about live monitoring, WiFi sensing, fall detection, room status, movement, breathing, or the simulated dashboard.
+
+4. general_chat
+   Use this for normal conversation not requiring Odoo patient data or dashboard data.
+
+Important:
+- Do not answer the user.
+- Return valid JSON only.
+- Do not use markdown.
+- If there is no current patient and the user asks about a patient without giving a searchable patient identity, return action "need_patient".
+- patient_query must be null unless action is search_patient.
+- You are multilingual. Understand Arabic, English, and mixed Arabic-English.
+
+Current selected patient:
+{self._safe_json(current_patient_brief)}
+
+Live dashboard context:
+{self._safe_json(dashboard_context)}
+
+User message:
+{question}
+
+Return JSON with exactly this shape:
+{{
+  "action": "search_patient | answer_current_patient | answer_dashboard | general_chat | need_patient",
+  "patient_query": null,
+  "reason": "short reason"
+}}
+"""
+
+        raw_answer, _, _, _ = self._call_llm(prompt)
+        decision = self._parse_json(raw_answer)
+
+        if not isinstance(decision, dict):
+            return {
+                "action": "general_chat",
+                "patient_query": None,
+                "reason": "Planner returned invalid JSON.",
+            }
+
+        action = decision.get("action")
+        if action not in [
+            "search_patient",
+            "answer_current_patient",
+            "answer_dashboard",
+            "general_chat",
+            "need_patient",
+        ]:
+            action = "general_chat"
+
+        return {
+            "action": action,
+            "patient_query": decision.get("patient_query"),
+            "reason": decision.get("reason"),
+        }
+
+    # ------------------------------------------------------------------
+    # ODOO TOOLS
+    # ------------------------------------------------------------------
+
+    def _tool_search_patient(
+        self,
+        question: str,
+        patient_query: Optional[str],
+        user_language: str,
+        reason: Optional[str],
+    ) -> Dict[str, Any]:
+        patient_query = (patient_query or "").strip()
+
+        if not patient_query:
+            return self._normal_response(
+                question=question,
+                answer=(
+                    "من فضلك اذكر اسم المريض أو رقم الهوية أو المرجع."
                     if user_language == "ar"
-                    else "Please provide the patient name or ID number to search in Odoo."
-                )
+                    else "Please provide the patient name, ID number, or reference."
+                ),
+                intent="search_patient",
+                provider="odoo_tool",
+                model="sm.patient",
+                context={
+                    "tool": "search_patient",
+                    "planner_reason": reason,
+                    "odoo_data": [],
+                },
+                error=None,
+            )
 
-                return self._odoo_response(
-                    question=question,
-                    answer=answer,
-                    tool="search_patient",
-                    data=[],
-                    error=None,
-                )
-
+        try:
             service = OdooPatientService()
             patients = service.search_patient(patient_query, limit=5)
 
             if not patients:
-                answer = (
-                    f"لم أجد أي مريض مطابق للبحث: {patient_query}"
-                    if user_language == "ar"
-                    else f"I could not find any patient matching: {patient_query}"
-                )
-
-                return self._odoo_response(
+                return self._normal_response(
                     question=question,
-                    answer=answer,
-                    tool="search_patient",
-                    data=[],
+                    answer=(
+                        f"لم أجد مريضاً مطابقاً لـ: {patient_query}"
+                        if user_language == "ar"
+                        else f"I could not find a patient matching: {patient_query}"
+                    ),
+                    intent="search_patient",
+                    provider="odoo_tool",
+                    model="sm.patient",
+                    context={
+                        "tool": "search_patient",
+                        "planner_reason": reason,
+                        "patient_query": patient_query,
+                        "odoo_data": [],
+                    },
                     error=None,
                 )
 
@@ -166,178 +286,385 @@ class CareSenseLLMAgent:
 
             for patient in patients:
                 patient_id = patient.get("id")
-                full_summary = service.get_patient_full_summary(patient_id)
+                full_summary = service.get_patient_context_for_chat(patient_id)
                 summaries.append(full_summary or {"profile": patient, "latest_vitals": {}})
 
-            answer = self._format_patient_full_summary(
-                summaries=summaries,
-                user_language=user_language,
-            )
+            if len(summaries) == 1:
+                self.current_patient_summary = summaries[0]
+                self.current_patient_id = (
+                    summaries[0].get("profile", {}) or {}
+                ).get("id")
 
-            return self._odoo_response(
+                answer = self._format_loaded_patient_message(
+                    patient_summary=summaries[0],
+                    user_language=user_language,
+                )
+
+                return self._normal_response(
+                    question=question,
+                    answer=answer,
+                    intent="search_patient",
+                    provider="odoo_tool",
+                    model="sm.patient",
+                    context={
+                        "tool": "search_patient",
+                        "planner_reason": reason,
+                        "patient_query": patient_query,
+                        "current_patient": self.current_patient_summary,
+                        "odoo_data": summaries,
+                    },
+                    error=None,
+                )
+
+            return self._normal_response(
                 question=question,
-                answer=answer,
-                tool="get_patient_full_summary",
-                data=summaries,
+                answer=self._format_patient_selection(summaries, user_language),
+                intent="select_patient",
+                provider="odoo_tool",
+                model="sm.patient",
+                context={
+                    "tool": "search_patient",
+                    "planner_reason": reason,
+                    "patient_query": patient_query,
+                    "odoo_data": summaries,
+                },
                 error=None,
             )
 
         except Exception as e:
-            answer = (
-                f"حدث خطأ أثناء الاتصال بـ Odoo: {str(e)}"
-                if user_language == "ar"
-                else f"An error occurred while connecting to Odoo: {str(e)}"
-            )
-
-            return self._odoo_response(
+            return self._normal_response(
                 question=question,
-                answer=answer,
-                tool="get_patient_full_summary",
-                data=[],
+                answer=(
+                    f"حدث خطأ أثناء الاتصال بـ Odoo: {str(e)}"
+                    if user_language == "ar"
+                    else f"An error occurred while connecting to Odoo: {str(e)}"
+                ),
+                intent="search_patient_error",
+                provider="odoo_tool",
+                model="sm.patient",
+                context={
+                    "tool": "search_patient",
+                    "planner_reason": reason,
+                    "patient_query": patient_query,
+                },
                 error=str(e),
             )
 
-    def _format_patient_full_summary(
-            self,
-            summaries: list,
-            user_language: str,
-    ) -> str:
-
-        if user_language == "ar":
-            lines = [f"وجدت {len(summaries)} نتيجة في Odoo:"]
-
-            for item in summaries:
-                profile = item.get("profile", {}) or {}
-                vitals = item.get("latest_vitals", {}) or {}
-
-                lines.append(
-                    f"""
-    الاسم: {profile.get("name") or "غير متوفر"}
-    رقم السجل: {profile.get("id") or "غير متوفر"}
-    المرجع: {profile.get("reference") or "غير متوفر"}
-    رقم الهوية: {profile.get("ssn") or "غير متوفر"}
-    الجوال: {profile.get("mobile") or "غير متوفر"}
-    العمر: {profile.get("age") or "غير متوفر"}
-    الجنس: {profile.get("sex") or "غير متوفر"}
-    فصيلة الدم: {profile.get("blood_type") or "غير متوفرة"}
-    حالة الملف: {profile.get("state") or "غير متوفرة"}
-    حالة المريض: {profile.get("patient_condition") or "غير محددة"}
-
-    آخر تشخيص: {profile.get("last_diagnosis") or "غير متوفر"}
-    تاريخ التشخيص: {profile.get("diagnosis_date") or "غير متوفر"}
-
-    معلومات حرجة: {profile.get("critical_info") or "لا توجد معلومات حرجة مسجلة"}
-    معلومات عامة: {profile.get("general_info") or "لا توجد معلومات عامة مسجلة"}
-
-    آخر علامات حيوية:
-    - الحرارة: {vitals.get("last_temperature") or "غير متوفرة"}
-    - النبض: {vitals.get("last_heart_rate") or "غير متوفر"}
-    - الأكسجين: {vitals.get("last_oxygen_saturation") or "غير متوفر"}
-    - معدل التنفس: {vitals.get("last_respiratory_rate") or "غير متوفر"}
-    - الضغط الانقباضي: {vitals.get("last_systolic") or "غير متوفر"}
-    - الضغط الانبساطي: {vitals.get("last_diastolic") or "غير متوفر"}
-    - السكر: {vitals.get("last_glycemia") or "غير متوفر"}
-    - الوزن: {vitals.get("last_weight") or "غير متوفر"}
-    - الطول: {vitals.get("last_height") or "غير متوفر"}
-    """.strip()
-                )
-
-            return "\n\n".join(lines)
-
-        lines = [f"I found {len(summaries)} result(s) in Odoo:"]
-
-        for item in summaries:
-            profile = item.get("profile", {}) or {}
-            vitals = item.get("latest_vitals", {}) or {}
-
-            lines.append(
-                f"""
-    Name: {profile.get("name") or "N/A"}
-    Record ID: {profile.get("id") or "N/A"}
-    Reference: {profile.get("reference") or "N/A"}
-    ID Number: {profile.get("ssn") or "N/A"}
-    Mobile: {profile.get("mobile") or "N/A"}
-    Age: {profile.get("age") or "N/A"}
-    Gender: {profile.get("sex") or "N/A"}
-    Blood Type: {profile.get("blood_type") or "N/A"}
-    File Status: {profile.get("state") or "N/A"}
-    Patient Condition: {profile.get("patient_condition") or "N/A"}
-
-    Last Diagnosis: {profile.get("last_diagnosis") or "N/A"}
-    Diagnosis Date: {profile.get("diagnosis_date") or "N/A"}
-
-    Critical Info: {profile.get("critical_info") or "No critical information recorded"}
-    General Info: {profile.get("general_info") or "No general information recorded"}
-
-    Latest Vitals:
-    - Temperature: {vitals.get("last_temperature") or "N/A"}
-    - Heart Rate: {vitals.get("last_heart_rate") or "N/A"}
-    - Oxygen Saturation: {vitals.get("last_oxygen_saturation") or "N/A"}
-    - Respiratory Rate: {vitals.get("last_respiratory_rate") or "N/A"}
-    - Systolic BP: {vitals.get("last_systolic") or "N/A"}
-    - Diastolic BP: {vitals.get("last_diastolic") or "N/A"}
-    - Glycemia: {vitals.get("last_glycemia") or "N/A"}
-    - Weight: {vitals.get("last_weight") or "N/A"}
-    - Height: {vitals.get("last_height") or "N/A"}
-    """.strip()
+    def _answer_from_current_patient(
+        self,
+        question: str,
+        user_language: str,
+        dashboard_context: Dict[str, Any],
+        reason: Optional[str],
+    ) -> Dict[str, Any]:
+        if not self.current_patient_summary:
+            return self._normal_response(
+                question=question,
+                answer=(
+                    "لا يوجد مريض محدد حالياً. ابحث عن المريض أولاً، وبعدها اسألني عنه بأي صيغة."
+                    if user_language == "ar"
+                    else "There is no selected patient yet. Search for a patient first, then ask me about them freely."
+                ),
+                intent="need_patient_context",
+                provider="system",
+                model=None,
+                context={
+                    "planner_reason": reason,
+                    "dashboard": dashboard_context,
+                },
+                error=None,
             )
 
-        return "\n\n".join(lines)
+        prompt = self._build_patient_answer_prompt(
+            question=question,
+            patient_summary=self.current_patient_summary,
+            dashboard_context=dashboard_context,
+            user_language=user_language,
+        )
 
-    def _odoo_response(
-            self,
-            question: str,
-            answer: str,
-            tool: str,
-            data: Any,
-            error: Optional[str],
+        answer, provider_used, model_used, error_message = self._call_llm(prompt)
+
+        return self._normal_response(
+            question=question,
+            answer=answer,
+            intent="answer_current_patient",
+            provider=provider_used,
+            model=model_used,
+            context={
+                "planner_reason": reason,
+                "current_patient": self.current_patient_summary,
+                "dashboard": dashboard_context,
+            },
+            error=error_message,
+        )
+
+    # ------------------------------------------------------------------
+    # ANSWER PROMPTS
+    # ------------------------------------------------------------------
+
+    def _build_patient_answer_prompt(
+        self,
+        question: str,
+        patient_summary: Dict[str, Any],
+        dashboard_context: Dict[str, Any],
+        user_language: str,
+    ) -> str:
+        language_rule = (
+            "Answer only in Arabic. Use clear simple Arabic."
+            if user_language == "ar"
+            else "Answer only in English. Use clear simple clinical language."
+        )
+
+        return f"""
+You are CareSense AI, a smart medical assistant connected to Odoo.
+
+You are answering a free chat question about the currently selected patient.
+
+Rules:
+- Use ONLY the Odoo patient data provided.
+- Do not invent missing values.
+- If the requested information is not available, say it is not available in the current Odoo record.
+- You can interpret vitals cautiously, but you must not give a confirmed diagnosis.
+- If the user asks whether the patient needs a doctor or appointment, answer based on the available data and recommend clinical review when appropriate.
+- Do not expose raw JSON unless the user asks for raw data.
+- Be natural like a chat assistant, not a fixed report.
+- {language_rule}
+
+User question:
+{question}
+
+Selected Odoo patient data:
+{self._safe_json(patient_summary)}
+
+Live dashboard context, if relevant:
+{self._safe_json(dashboard_context)}
+"""
+
+    def _answer_from_dashboard(
+        self,
+        question: str,
+        user_language: str,
+        dashboard_context: Dict[str, Any],
+        reason: Optional[str],
+    ) -> Dict[str, Any]:
+        language_rule = (
+            "أجب باللغة العربية فقط."
+            if user_language == "ar"
+            else "Answer in English only."
+        )
+
+        prompt = f"""
+You are CareSense AI.
+
+Answer the user's question using only the live dashboard context below.
+
+Rules:
+- The dashboard data is simulated WiFi CSI monitoring data.
+- Do not invent values.
+- Do not provide a confirmed medical diagnosis.
+- Be concise and natural.
+- {language_rule}
+
+User question:
+{question}
+
+Dashboard context:
+{self._safe_json(dashboard_context)}
+"""
+
+        answer, provider_used, model_used, error_message = self._call_llm(prompt)
+
+        return self._normal_response(
+            question=question,
+            answer=answer,
+            intent="answer_dashboard",
+            provider=provider_used,
+            model=model_used,
+            context={
+                "planner_reason": reason,
+                "dashboard": dashboard_context,
+            },
+            error=error_message,
+        )
+
+    def _answer_general(
+        self,
+        question: str,
+        user_language: str,
+        dashboard_context: Dict[str, Any],
+        reason: Optional[str],
+    ) -> Dict[str, Any]:
+        current_patient_brief = None
+
+        if self.current_patient_summary:
+            profile = self.current_patient_summary.get("profile", {}) or {}
+            current_patient_brief = {
+                "id": profile.get("id"),
+                "name": profile.get("name"),
+                "reference": profile.get("reference"),
+            }
+
+        language_rule = (
+            "أجب باللغة العربية فقط."
+            if user_language == "ar"
+            else "Answer in English only."
+        )
+
+        prompt = f"""
+You are CareSense AI, a conversational medical monitoring assistant.
+
+Rules:
+- Be natural and helpful.
+- Do not invent patient data.
+- If the user asks about a patient, explain that a patient can be loaded from Odoo first.
+- {language_rule}
+
+Current selected patient brief:
+{self._safe_json(current_patient_brief)}
+
+User question:
+{question}
+"""
+
+        answer, provider_used, model_used, error_message = self._call_llm(prompt)
+
+        return self._normal_response(
+            question=question,
+            answer=answer,
+            intent="general_chat",
+            provider=provider_used,
+            model=model_used,
+            context={
+                "planner_reason": reason,
+                "current_patient": current_patient_brief,
+                "dashboard": dashboard_context,
+            },
+            error=error_message,
+        )
+
+    # ------------------------------------------------------------------
+    # FORMATTERS
+    # ------------------------------------------------------------------
+
+    def _format_loaded_patient_message(
+        self,
+        patient_summary: Dict[str, Any],
+        user_language: str,
+    ) -> str:
+        profile = patient_summary.get("profile", {}) or {}
+        vitals = patient_summary.get("latest_vitals", {}) or {}
+
+        if user_language == "ar":
+            return (
+                f"تم تحميل المريض كمريض حالي.\n\n"
+                f"الاسم: {profile.get('name') or 'غير متوفر'}\n"
+                f"رقم السجل: {profile.get('id') or 'غير متوفر'}\n"
+                f"المرجع: {profile.get('reference') or 'غير متوفر'}\n"
+                f"العمر: {profile.get('age') or 'غير متوفر'}\n"
+                f"الحالة: {profile.get('patient_condition') or 'غير محددة'}\n\n"
+                f"يمكنك الآن أن تسألني عنه بأي صيغة، مثل: هل ضغطه مقلق؟ ما آخر تشخيص؟ هل يحتاج موعد؟"
+            )
+
+        return (
+            f"Patient loaded as the current patient.\n\n"
+            f"Name: {profile.get('name') or 'N/A'}\n"
+            f"Record ID: {profile.get('id') or 'N/A'}\n"
+            f"Reference: {profile.get('reference') or 'N/A'}\n"
+            f"Age: {profile.get('age') or 'N/A'}\n"
+            f"Condition: {profile.get('patient_condition') or 'N/A'}\n\n"
+            f"You can now ask about this patient freely."
+        )
+
+    def _format_patient_selection(
+        self,
+        summaries: List[Dict[str, Any]],
+        user_language: str,
+    ) -> str:
+        if user_language == "ar":
+            lines = ["وجدت أكثر من مريض مطابق. من فضلك حدد المريض برقم السجل:"]
+            for item in summaries:
+                profile = item.get("profile", {}) or {}
+                lines.append(
+                    f"- رقم السجل: {profile.get('id')}, "
+                    f"الاسم: {profile.get('name') or 'غير متوفر'}, "
+                    f"المرجع: {profile.get('reference') or 'غير متوفر'}, "
+                    f"رقم الهوية: {profile.get('ssn') or 'غير متوفر'}"
+                )
+            return "\n".join(lines)
+
+        lines = ["I found more than one matching patient. Please specify the record ID:"]
+        for item in summaries:
+            profile = item.get("profile", {}) or {}
+            lines.append(
+                f"- Record ID: {profile.get('id')}, "
+                f"Name: {profile.get('name') or 'N/A'}, "
+                f"Reference: {profile.get('reference') or 'N/A'}, "
+                f"ID Number: {profile.get('ssn') or 'N/A'}"
+            )
+        return "\n".join(lines)
+
+    def _normal_response(
+        self,
+        question: str,
+        answer: str,
+        intent: str,
+        provider: str,
+        model: Optional[str],
+        context: Dict[str, Any],
+        error: Optional[str],
     ) -> Dict[str, Any]:
         return {
             "agent": self.agent_name,
-            "provider": "odoo_tool",
-            "model": "sm.patient",
+            "provider": provider,
+            "model": model,
             "question": question,
-            "intent": "odoo_patient_search",
+            "intent": intent,
             "answer": answer,
-            "context": {
-                "odoo_data": data,
-            },
+            "context": context,
             "agent_trace": {
                 "timestamp": datetime.utcnow().isoformat(),
-                "reasoning_mode": "tool_call",
-                "tool": tool,
-                "data_source": "odoo_sm_patient",
+                "reasoning_mode": "llm_tool_planner",
                 "odoo_enabled": True,
+                "current_patient_id": self.current_patient_id,
                 "error": error,
             },
-            "disclaimer": "Patient data retrieved from Odoo according to the configured Odoo user permissions.",
+            "disclaimer": (
+                "Patient data is retrieved from Odoo according to configured permissions. "
+                "This is not a confirmed medical diagnosis."
+            ),
         }
 
-    def _extract_patient_search_query(self, question: str) -> str:
-        q = (question or "").strip()
+    # ------------------------------------------------------------------
+    # LLM CALLS
+    # ------------------------------------------------------------------
 
-        replacements = [
-            "ابحث عن المريض",
-            "ابحث عن مريض",
-            "دور على المريض",
-            "دور على مريض",
-            "هات بيانات المريض",
-            "بيانات المريض",
-            "ملف المريض",
-            "search patient",
-            "find patient",
-            "patient data",
-            "patient profile",
-        ]
+    def _call_llm(self, prompt: str) -> Tuple[str, str, Optional[str], Optional[str]]:
+        provider_used = None
+        model_used = None
+        error_message = None
 
-        cleaned = q
+        if self.provider == "gemini":
+            answer = self._call_gemini(prompt)
+            provider_used = "gemini"
+            model_used = self.gemini_model
 
-        for item in replacements:
-            cleaned = cleaned.replace(item, "")
+        elif self.provider == "ollama":
+            answer = self._call_ollama(prompt)
+            provider_used = "ollama"
+            model_used = self.ollama_model
 
-        cleaned = cleaned.replace("؟", "").replace("?", "").strip()
+        else:
+            try:
+                answer = self._call_gemini(prompt)
+                provider_used = "gemini"
+                model_used = self.gemini_model
+            except Exception as gemini_error:
+                error_message = str(gemini_error)
+                answer = self._call_ollama(prompt)
+                provider_used = "ollama"
+                model_used = self.ollama_model
 
-        return cleaned
+        return answer, provider_used, model_used, error_message
 
     def _call_gemini(self, prompt: str) -> str:
         if not self.gemini_client:
@@ -358,9 +685,9 @@ class CareSenseLLMAgent:
             "prompt": prompt,
             "stream": False,
             "options": {
-                "temperature": 0.4,
+                "temperature": 0.2,
                 "top_p": 0.9,
-                "num_predict": 160,
+                "num_predict": 500,
             },
         }
 
@@ -369,6 +696,35 @@ class CareSenseLLMAgent:
 
         data = response.json()
         return data.get("response", "No response returned from Ollama.")
+
+    # ------------------------------------------------------------------
+    # HELPERS
+    # ------------------------------------------------------------------
+
+    def _parse_json(self, text: str) -> Dict[str, Any]:
+        if not text:
+            return {}
+
+        text = text.strip()
+
+        if text.startswith("```"):
+            text = text.replace("```json", "").replace("```", "").strip()
+
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+        start = text.find("{")
+        end = text.rfind("}")
+
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except Exception:
+                return {}
+
+        return {}
 
     def _detect_language(self, text: str) -> str:
         arabic_chars = len([c for c in text if "\u0600" <= c <= "\u06FF"])
@@ -379,295 +735,9 @@ class CareSenseLLMAgent:
 
         return "en"
 
-    def _detect_intent(self, question: str) -> str:
-        q = (question or "").lower().strip()
-
-        if not q:
-            return "empty"
-
-        odoo_patient_keywords = [
-            "ابحث عن المريض",
-            "ابحث عن مريض",
-            "دور على المريض",
-            "دور على مريض",
-            "بيانات المريض",
-            "ملف المريض",
-            "هات بيانات المريض",
-            "search patient",
-            "find patient",
-            "patient data",
-            "patient profile",
-        ]
-
-        general_keywords = [
-            "hello", "hi", "hey", "good morning", "good evening",
-            "who are you", "what are you", "can you speak", "speak arabic",
-            "arabic", "english", "help", "مرحبا", "اهلا", "أهلا",
-            "السلام", "تتكلم عربي", "عربي", "انت مين", "ما اسمك"
-        ]
-
-        odoo_keywords = [
-            "odoo", "appointment", "book", "patient record", "medical record",
-            "consultation", "invoice", "حجز", "موعد", "اودو", "أودو",
-            "السجل الطبي", "استشارة"
-        ]
-
-        emergency_keywords = [
-            "emergency", "urgent", "critical", "call doctor", "call nurse",
-            "should i call", "doctor now", "اسعاف", "إسعاف", "طوارئ",
-            "خطر", "حرج", "اكلم الدكتور", "اتصل بالدكتور"
-        ]
-
-        patient_keywords = [
-            "patient", "status", "condition", "vitals", "vital signs",
-            "heart", "pulse", "breathing", "oxygen", "temperature",
-            "risk", "fall", "fallen", "movement", "motion", "location",
-            "monitoring summary", "clinical summary",
-            "المريض", "الحالة", "علامات", "حيوية", "نبض", "تنفس",
-            "أكسجين", "اكسجين", "حرارة", "خطر", "سقوط", "وقع",
-            "حركة", "مكان"
-        ]
-
-        wifi_keywords = [
-            "wifi", "wi-fi", "csi", "signal", "amplitude", "phase",
-            "wireless", "موجات", "واي فاي", "وايفاي", "إشارة", "اشارة"
-        ]
-
-        if any(k in q for k in odoo_patient_keywords):
-            return "odoo_patient_search"
-
-        if any(k in q for k in emergency_keywords):
-            return "emergency"
-
-        if any(k in q for k in odoo_keywords):
-            return "odoo"
-
-        if any(k in q for k in wifi_keywords):
-            return "wifi_csi"
-
-        if any(k in q for k in patient_keywords):
-            return "patient_monitoring"
-
-        if any(k in q for k in general_keywords):
-            return "general_chat"
-
-        return "general_chat"
-
-    def _build_prompt(
-            self,
-            question: str,
-            intent: str,
-            context: Dict[str, Any],
-            dashboard_payload: Dict[str, Any],
-            user_language: str,
-    ) -> str:
-        if user_language == "ar":
-            language_rule = """
-STRICT LANGUAGE RULE:
-- The user's question is Arabic.
-- You MUST answer ONLY in Arabic.
-- Do not answer in English.
-- Do not include English section titles.
-- Translate any section titles into Arabic.
-- Use clear Modern Standard Arabic with simple medical wording.
-"""
-        else:
-            language_rule = """
-STRICT LANGUAGE RULE:
-- The user's question is English.
-- You MUST answer ONLY in English.
-- Do not answer in Arabic.
-- Keep the tone professional, clear, natural, and conversational.
-"""
-
-        identity = """
-You are CareSense AI, a conversational medical monitoring AI agent.
-
-You are part of a non-wearable patient monitoring platform that uses simulated WiFi CSI sensing.
-
-You can discuss:
-- patient monitoring
-- WiFi CSI sensing
-- fall detection
-- vital signs
-- risk analysis
-- future Odoo healthcare integration
-- voice assistant workflow
-- general questions about your role and capabilities
-
-Important safety rules:
-- Do not claim to provide a real medical diagnosis.
-- Do not invent patient data.
-- Only use live monitoring data when the user's question is about the patient, monitoring, risk, fall, vitals, WiFi CSI, or emergency.
-- For normal conversation, do not force a clinical report.
-- Always remind the user that monitoring data is simulated when giving patient-related analysis.
-"""
-
-        if user_language == "ar":
-            patient_structure = """
-التقييم السريري:
-...
-
-الأدلة الحالية:
-...
-
-تفسير مستوى الخطورة:
-...
-
-الإجراء الموصى به:
-...
-
-ملاحظة مهمة:
-هذه بيانات مراقبة محاكاة وليست تشخيصاً طبياً.
-"""
-        else:
-            patient_structure = """
-Clinical Assessment:
-...
-
-Current Evidence:
-...
-
-Risk Interpretation:
-...
-
-Recommended Action:
-...
-
-Important Note:
-This is simulated monitoring data and not a medical diagnosis.
-"""
-
-        if intent == "empty":
-            return f"""
-{identity}
-{language_rule}
-
-The user sent an empty question.
-
-Reply briefly and ask what they want to know.
-"""
-
-        if intent == "general_chat":
-            return f"""
-{identity}
-{language_rule}
-
-User question:
-{question}
-
-The user's question is general conversation, not a request for patient analysis.
-
-Answer naturally as CareSense AI.
-Do not analyze patient data.
-Do not output clinical sections unless the user asks about the patient.
-"""
-
-        if intent == "odoo":
-            return f"""
-{identity}
-{language_rule}
-
-User question:
-{question}
-
-The user is asking about Odoo or healthcare workflow integration.
-
-Current Odoo status:
-- Odoo patient search tool is connected.
-- Other future tools will include:
-  1. get_patient_medical_record
-  2. create_patient_alert
-  3. book_appointment
-  4. create_clinical_note
-
-Answer as CareSense AI.
-Explain what you can do now and what will be added later.
-Do not claim any action was completed unless the tool actually exists and was executed.
-"""
-
-        monitoring_context = self._safe_json(context)
-
-        if intent == "wifi_csi":
-            return f"""
-{identity}
-{language_rule}
-
-User question:
-{question}
-
-The user is asking about WiFi CSI or signal analysis.
-
-Use ONLY this live monitoring context:
-{monitoring_context}
-
-Answer with:
-1. What the WiFi CSI signal indicates
-2. How it relates to movement, breathing, or fall risk
-3. Any limitation of the current simulated data
-
-Do not invent values outside the provided context.
-"""
-
-        if intent == "emergency":
-            return f"""
-{identity}
-{language_rule}
-
-User question:
-{question}
-
-The user is asking about emergency action.
-
-Use ONLY this live monitoring context:
-{monitoring_context}
-
-Give a clear triage-style response:
-1. Current risk state
-2. Evidence from the data
-3. Whether immediate human verification is needed
-4. Recommended next action
-
-If risk_level is critical, fall_detected is true, breathing is abnormal, or heart rate is very high,
-recommend immediate human verification.
-
-Do not present this as a confirmed medical diagnosis.
-"""
-
-        if intent == "patient_monitoring":
-            return f"""
-{identity}
-{language_rule}
-
-User question:
-{question}
-
-The user is asking about the patient or monitoring status.
-
-Use ONLY this live monitoring context:
-{monitoring_context}
-
-Answer in a concise clinical dashboard style.
-
-Use this structure only for patient monitoring questions:
-
-{patient_structure}
-
-Do not mention fields that are missing or None unless relevant.
-Do not invent patient data.
-"""
-
-        return f"""
-{identity}
-{language_rule}
-
-User question:
-{question}
-
-Answer naturally and helpfully as CareSense AI.
-"""
-
     def _extract_context(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        payload = payload or {}
+
         sensor = payload.get("sensor_data", {}) or {}
         risk = payload.get("risk_assessment", {}) or {}
         fall = payload.get("fall_analysis", {}) or {}
@@ -710,31 +780,24 @@ Answer naturally and helpfully as CareSense AI.
             "system_summary": ai_agent.get("summary"),
         }
 
-    def _data_source_for_intent(self, intent: str) -> str:
-        if intent == "odoo_patient_search":
-            return "odoo_sm_patient"
-        if intent in ["patient_monitoring", "wifi_csi", "emergency"]:
-            return "live_dashboard_payload"
-        if intent == "odoo":
-            return "planned_odoo_tools"
-        return "conversation_only"
-
-    def _next_stage_for_intent(self, intent: str) -> Optional[str]:
-        if intent == "odoo_patient_search":
-            return "get_patient_profile_and_vitals"
-        if intent == "odoo":
-            return "connect_more_odoo_tools"
-        if intent in ["patient_monitoring", "wifi_csi", "emergency"]:
-            return "add_tool_calling_layer"
-        return None
-
-    def _safe_json(self, data: Dict[str, Any]) -> str:
+    def _safe_json(self, data: Any) -> str:
         try:
             return json.dumps(data, indent=2, ensure_ascii=False, default=str)
         except Exception:
             return str(data)
 
 
-def generate_llm_chat_response(question: str, dashboard_payload: dict) -> dict:
-    agent = CareSenseLLMAgent()
-    return agent.run(question, dashboard_payload)
+_agent_instance = CareSenseLLMAgent()
+
+
+def generate_llm_chat_response(
+    question: str,
+    dashboard_payload: dict,
+    session_id: str,
+) -> dict:
+
+    return _agent_instance.run(
+        question=question,
+        dashboard_payload=dashboard_payload,
+        session_id=session_id,
+    )
