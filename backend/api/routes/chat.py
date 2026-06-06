@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from ai.agent.chat_agent import generate_chat_response
+from ai.agent.llm_agent import generate_llm_chat_response
 from backend.api.routes.dashboard import build_dashboard_payload
 
 router = APIRouter()
@@ -16,7 +16,7 @@ def chat(request: ChatRequest):
 
     dashboard_payload = build_dashboard_payload()
 
-    response = generate_chat_response(
+    response = generate_llm_chat_response(
         question=request.question,
         dashboard_payload=dashboard_payload
     )

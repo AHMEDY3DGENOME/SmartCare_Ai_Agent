@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from backend.api.routes.simulator import router as simulator_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.chat import router as chat_router
+from backend.api.routes.tts import router as tts_router
 
 app = FastAPI(
     title="CareSense AI",
@@ -20,18 +21,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --------------------------------------------------
 # Routers
+# --------------------------------------------------
+
 app.include_router(simulator_router)
 app.include_router(dashboard_router)
 app.include_router(chat_router)
+app.include_router(tts_router)
 
+# --------------------------------------------------
 # Static Files
+# --------------------------------------------------
+
 app.mount(
     "/static",
     StaticFiles(directory="dashboard/frontend"),
     name="static"
 )
 
+# --------------------------------------------------
+# Basic Endpoints
+# --------------------------------------------------
 
 @app.get("/")
 def home():
@@ -44,7 +55,8 @@ def home():
             "Risk Engine",
             "Fall Detection",
             "Medical AI Agent",
-            "Chat Agent",
+            "Gemini LLM Agent",
+            "TTS Service",
             "Dashboard"
         ]
     }
