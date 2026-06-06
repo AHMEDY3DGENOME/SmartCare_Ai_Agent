@@ -9,12 +9,16 @@ router = APIRouter()
 
 class TTSRequest(BaseModel):
     text: str
+    language: str | None = None
 
 
 @router.post("/tts")
 def text_to_speech(request: TTSRequest):
 
-    audio_path = generate_tts_audio(request.text)
+    audio_path = generate_tts_audio(
+        text=request.text,
+        language=request.language
+    )
 
     return FileResponse(
         audio_path,
