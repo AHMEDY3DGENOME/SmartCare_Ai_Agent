@@ -6,11 +6,12 @@ from typing import Dict, Any, Optional
 
 from dotenv import load_dotenv
 
+from integrations.odoo.patients import OdooPatientService
+
 try:
     from google import genai
 except Exception:
     genai = None
-
 
 load_dotenv()
 
@@ -38,13 +39,18 @@ class CareSenseLLMAgent:
     def run(self, question: str, dashboard_payload: Dict[str, Any]) -> Dict[str, Any]:
         question = (question or "").strip()
         intent = self._detect_intent(question)
+        user_language = self._detect_language(question)
         context = self._extract_context(dashboard_payload)
+
+        if intent == "odoo_patient_search":
+            return self._run_odoo_patient_search(question, user_language)
 
         prompt = self._build_prompt(
             question=question,
             intent=intent,
             context=context,
             dashboard_payload=dashboard_payload,
+            user_language=user_language,
         )
 
         provider_used = None
@@ -96,9 +102,7 @@ class CareSenseLLMAgent:
             }
 
         except Exception as e:
-            fallback_language = self._detect_language(question)
-
-            if fallback_language == "ar":
+            if user_language == "ar":
                 answer = (
                     "تعذر على CareSense AI الوصول إلى نموذج الذكاء الاصطناعي حالياً. "
                     "تأكد أن Ollama يعمل محلياً وأن الموديل تم تحميله."
@@ -121,6 +125,220 @@ class CareSenseLLMAgent:
                 "disclaimer": "This is a simulated AI monitoring demo and not a medical diagnosis.",
             }
 
+    def _run_odoo_patient_search(self, question: str, user_language: str) -> Dict[str, Any]:
+        try:
+            patient_query = self._extract_patient_search_query(question)
+
+            if not patient_query:
+                answer = (
+                    "من فضلك اذكر اسم المريض أو رقم الهوية للبحث عنه في Odoo."
+                    if user_language == "ar"
+                    else "Please provide the patient name or ID number to search in Odoo."
+                )
+
+                return self._odoo_response(
+                    question=question,
+                    answer=answer,
+                    tool="search_patient",
+                    data=[],
+                    error=None,
+                )
+
+            service = OdooPatientService()
+            patients = service.search_patient(patient_query, limit=5)
+
+            if not patients:
+                answer = (
+                    f"لم أجد أي مريض مطابق للبحث: {patient_query}"
+                    if user_language == "ar"
+                    else f"I could not find any patient matching: {patient_query}"
+                )
+
+                return self._odoo_response(
+                    question=question,
+                    answer=answer,
+                    tool="search_patient",
+                    data=[],
+                    error=None,
+                )
+
+            summaries = []
+
+            for patient in patients:
+                patient_id = patient.get("id")
+                full_summary = service.get_patient_full_summary(patient_id)
+                summaries.append(full_summary or {"profile": patient, "latest_vitals": {}})
+
+            answer = self._format_patient_full_summary(
+                summaries=summaries,
+                user_language=user_language,
+            )
+
+            return self._odoo_response(
+                question=question,
+                answer=answer,
+                tool="get_patient_full_summary",
+                data=summaries,
+                error=None,
+            )
+
+        except Exception as e:
+            answer = (
+                f"حدث خطأ أثناء الاتصال بـ Odoo: {str(e)}"
+                if user_language == "ar"
+                else f"An error occurred while connecting to Odoo: {str(e)}"
+            )
+
+            return self._odoo_response(
+                question=question,
+                answer=answer,
+                tool="get_patient_full_summary",
+                data=[],
+                error=str(e),
+            )
+
+    def _format_patient_full_summary(
+            self,
+            summaries: list,
+            user_language: str,
+    ) -> str:
+
+        if user_language == "ar":
+            lines = [f"وجدت {len(summaries)} نتيجة في Odoo:"]
+
+            for item in summaries:
+                profile = item.get("profile", {}) or {}
+                vitals = item.get("latest_vitals", {}) or {}
+
+                lines.append(
+                    f"""
+    الاسم: {profile.get("name") or "غير متوفر"}
+    رقم السجل: {profile.get("id") or "غير متوفر"}
+    المرجع: {profile.get("reference") or "غير متوفر"}
+    رقم الهوية: {profile.get("ssn") or "غير متوفر"}
+    الجوال: {profile.get("mobile") or "غير متوفر"}
+    العمر: {profile.get("age") or "غير متوفر"}
+    الجنس: {profile.get("sex") or "غير متوفر"}
+    فصيلة الدم: {profile.get("blood_type") or "غير متوفرة"}
+    حالة الملف: {profile.get("state") or "غير متوفرة"}
+    حالة المريض: {profile.get("patient_condition") or "غير محددة"}
+
+    آخر تشخيص: {profile.get("last_diagnosis") or "غير متوفر"}
+    تاريخ التشخيص: {profile.get("diagnosis_date") or "غير متوفر"}
+
+    معلومات حرجة: {profile.get("critical_info") or "لا توجد معلومات حرجة مسجلة"}
+    معلومات عامة: {profile.get("general_info") or "لا توجد معلومات عامة مسجلة"}
+
+    آخر علامات حيوية:
+    - الحرارة: {vitals.get("last_temperature") or "غير متوفرة"}
+    - النبض: {vitals.get("last_heart_rate") or "غير متوفر"}
+    - الأكسجين: {vitals.get("last_oxygen_saturation") or "غير متوفر"}
+    - معدل التنفس: {vitals.get("last_respiratory_rate") or "غير متوفر"}
+    - الضغط الانقباضي: {vitals.get("last_systolic") or "غير متوفر"}
+    - الضغط الانبساطي: {vitals.get("last_diastolic") or "غير متوفر"}
+    - السكر: {vitals.get("last_glycemia") or "غير متوفر"}
+    - الوزن: {vitals.get("last_weight") or "غير متوفر"}
+    - الطول: {vitals.get("last_height") or "غير متوفر"}
+    """.strip()
+                )
+
+            return "\n\n".join(lines)
+
+        lines = [f"I found {len(summaries)} result(s) in Odoo:"]
+
+        for item in summaries:
+            profile = item.get("profile", {}) or {}
+            vitals = item.get("latest_vitals", {}) or {}
+
+            lines.append(
+                f"""
+    Name: {profile.get("name") or "N/A"}
+    Record ID: {profile.get("id") or "N/A"}
+    Reference: {profile.get("reference") or "N/A"}
+    ID Number: {profile.get("ssn") or "N/A"}
+    Mobile: {profile.get("mobile") or "N/A"}
+    Age: {profile.get("age") or "N/A"}
+    Gender: {profile.get("sex") or "N/A"}
+    Blood Type: {profile.get("blood_type") or "N/A"}
+    File Status: {profile.get("state") or "N/A"}
+    Patient Condition: {profile.get("patient_condition") or "N/A"}
+
+    Last Diagnosis: {profile.get("last_diagnosis") or "N/A"}
+    Diagnosis Date: {profile.get("diagnosis_date") or "N/A"}
+
+    Critical Info: {profile.get("critical_info") or "No critical information recorded"}
+    General Info: {profile.get("general_info") or "No general information recorded"}
+
+    Latest Vitals:
+    - Temperature: {vitals.get("last_temperature") or "N/A"}
+    - Heart Rate: {vitals.get("last_heart_rate") or "N/A"}
+    - Oxygen Saturation: {vitals.get("last_oxygen_saturation") or "N/A"}
+    - Respiratory Rate: {vitals.get("last_respiratory_rate") or "N/A"}
+    - Systolic BP: {vitals.get("last_systolic") or "N/A"}
+    - Diastolic BP: {vitals.get("last_diastolic") or "N/A"}
+    - Glycemia: {vitals.get("last_glycemia") or "N/A"}
+    - Weight: {vitals.get("last_weight") or "N/A"}
+    - Height: {vitals.get("last_height") or "N/A"}
+    """.strip()
+            )
+
+        return "\n\n".join(lines)
+
+    def _odoo_response(
+            self,
+            question: str,
+            answer: str,
+            tool: str,
+            data: Any,
+            error: Optional[str],
+    ) -> Dict[str, Any]:
+        return {
+            "agent": self.agent_name,
+            "provider": "odoo_tool",
+            "model": "sm.patient",
+            "question": question,
+            "intent": "odoo_patient_search",
+            "answer": answer,
+            "context": {
+                "odoo_data": data,
+            },
+            "agent_trace": {
+                "timestamp": datetime.utcnow().isoformat(),
+                "reasoning_mode": "tool_call",
+                "tool": tool,
+                "data_source": "odoo_sm_patient",
+                "odoo_enabled": True,
+                "error": error,
+            },
+            "disclaimer": "Patient data retrieved from Odoo according to the configured Odoo user permissions.",
+        }
+
+    def _extract_patient_search_query(self, question: str) -> str:
+        q = (question or "").strip()
+
+        replacements = [
+            "ابحث عن المريض",
+            "ابحث عن مريض",
+            "دور على المريض",
+            "دور على مريض",
+            "هات بيانات المريض",
+            "بيانات المريض",
+            "ملف المريض",
+            "search patient",
+            "find patient",
+            "patient data",
+            "patient profile",
+        ]
+
+        cleaned = q
+
+        for item in replacements:
+            cleaned = cleaned.replace(item, "")
+
+        cleaned = cleaned.replace("؟", "").replace("?", "").strip()
+
+        return cleaned
+
     def _call_gemini(self, prompt: str) -> str:
         if not self.gemini_client:
             raise ValueError("Gemini client is not configured.")
@@ -142,6 +360,7 @@ class CareSenseLLMAgent:
             "options": {
                 "temperature": 0.4,
                 "top_p": 0.9,
+                "num_predict": 160,
             },
         }
 
@@ -166,6 +385,20 @@ class CareSenseLLMAgent:
         if not q:
             return "empty"
 
+        odoo_patient_keywords = [
+            "ابحث عن المريض",
+            "ابحث عن مريض",
+            "دور على المريض",
+            "دور على مريض",
+            "بيانات المريض",
+            "ملف المريض",
+            "هات بيانات المريض",
+            "search patient",
+            "find patient",
+            "patient data",
+            "patient profile",
+        ]
+
         general_keywords = [
             "hello", "hi", "hey", "good morning", "good evening",
             "who are you", "what are you", "can you speak", "speak arabic",
@@ -176,7 +409,7 @@ class CareSenseLLMAgent:
         odoo_keywords = [
             "odoo", "appointment", "book", "patient record", "medical record",
             "consultation", "invoice", "حجز", "موعد", "اودو", "أودو",
-            "ملف المريض", "السجل الطبي", "استشارة"
+            "السجل الطبي", "استشارة"
         ]
 
         emergency_keywords = [
@@ -200,6 +433,9 @@ class CareSenseLLMAgent:
             "wireless", "موجات", "واي فاي", "وايفاي", "إشارة", "اشارة"
         ]
 
+        if any(k in q for k in odoo_patient_keywords):
+            return "odoo_patient_search"
+
         if any(k in q for k in emergency_keywords):
             return "emergency"
 
@@ -218,19 +454,29 @@ class CareSenseLLMAgent:
         return "general_chat"
 
     def _build_prompt(
-        self,
-        question: str,
-        intent: str,
-        context: Dict[str, Any],
-        dashboard_payload: Dict[str, Any],
+            self,
+            question: str,
+            intent: str,
+            context: Dict[str, Any],
+            dashboard_payload: Dict[str, Any],
+            user_language: str,
     ) -> str:
-        language_rule = """
-Language rule:
-- Detect the language of the user's question.
-- If the user writes in Arabic, reply ONLY in Arabic.
-- If the user writes in English, reply ONLY in English.
-- If the user mixes Arabic and English, reply mainly in the dominant language.
-- Do not switch languages unless the user asks you to.
+        if user_language == "ar":
+            language_rule = """
+STRICT LANGUAGE RULE:
+- The user's question is Arabic.
+- You MUST answer ONLY in Arabic.
+- Do not answer in English.
+- Do not include English section titles.
+- Translate any section titles into Arabic.
+- Use clear Modern Standard Arabic with simple medical wording.
+"""
+        else:
+            language_rule = """
+STRICT LANGUAGE RULE:
+- The user's question is English.
+- You MUST answer ONLY in English.
+- Do not answer in Arabic.
 - Keep the tone professional, clear, natural, and conversational.
 """
 
@@ -257,6 +503,41 @@ Important safety rules:
 - Always remind the user that monitoring data is simulated when giving patient-related analysis.
 """
 
+        if user_language == "ar":
+            patient_structure = """
+التقييم السريري:
+...
+
+الأدلة الحالية:
+...
+
+تفسير مستوى الخطورة:
+...
+
+الإجراء الموصى به:
+...
+
+ملاحظة مهمة:
+هذه بيانات مراقبة محاكاة وليست تشخيصاً طبياً.
+"""
+        else:
+            patient_structure = """
+Clinical Assessment:
+...
+
+Current Evidence:
+...
+
+Risk Interpretation:
+...
+
+Recommended Action:
+...
+
+Important Note:
+This is simulated monitoring data and not a medical diagnosis.
+"""
+
         if intent == "empty":
             return f"""
 {identity}
@@ -279,7 +560,7 @@ The user's question is general conversation, not a request for patient analysis.
 
 Answer naturally as CareSense AI.
 Do not analyze patient data.
-Do not output Clinical Assessment sections unless the user asks about the patient.
+Do not output clinical sections unless the user asks about the patient.
 """
 
         if intent == "odoo":
@@ -293,17 +574,15 @@ User question:
 The user is asking about Odoo or healthcare workflow integration.
 
 Current Odoo status:
-- Odoo tools are planned but not connected yet.
-- Future tools will include:
-  1. search_patient_in_odoo
-  2. get_patient_medical_record
-  3. create_patient_alert
-  4. book_appointment
-  5. create_clinical_note
+- Odoo patient search tool is connected.
+- Other future tools will include:
+  1. get_patient_medical_record
+  2. create_patient_alert
+  3. book_appointment
+  4. create_clinical_note
 
 Answer as CareSense AI.
-Explain what you will be able to do once Odoo is connected.
-Do not pretend that you already fetched real Odoo data.
+Explain what you can do now and what will be added later.
 Do not claim any action was completed unless the tool actually exists and was executed.
 """
 
@@ -372,20 +651,7 @@ Answer in a concise clinical dashboard style.
 
 Use this structure only for patient monitoring questions:
 
-Clinical Assessment:
-...
-
-Current Evidence:
-...
-
-Risk Interpretation:
-...
-
-Recommended Action:
-...
-
-Important Note:
-This is simulated monitoring data and not a medical diagnosis.
+{patient_structure}
 
 Do not mention fields that are missing or None unless relevant.
 Do not invent patient data.
@@ -445,6 +711,8 @@ Answer naturally and helpfully as CareSense AI.
         }
 
     def _data_source_for_intent(self, intent: str) -> str:
+        if intent == "odoo_patient_search":
+            return "odoo_sm_patient"
         if intent in ["patient_monitoring", "wifi_csi", "emergency"]:
             return "live_dashboard_payload"
         if intent == "odoo":
@@ -452,8 +720,10 @@ Answer naturally and helpfully as CareSense AI.
         return "conversation_only"
 
     def _next_stage_for_intent(self, intent: str) -> Optional[str]:
+        if intent == "odoo_patient_search":
+            return "get_patient_profile_and_vitals"
         if intent == "odoo":
-            return "connect_odoo_tools"
+            return "connect_more_odoo_tools"
         if intent in ["patient_monitoring", "wifi_csi", "emergency"]:
             return "add_tool_calling_layer"
         return None
