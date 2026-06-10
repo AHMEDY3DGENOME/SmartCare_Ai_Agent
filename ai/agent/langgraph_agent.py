@@ -421,6 +421,155 @@ def _value_or_na(value: Any, user_language: str) -> str:
     return str(value)
 
 
+def _is_yes(value: Any) -> bool:
+    return str(value).strip().lower() in ("yes", "true", "1")
+
+
+def _render_allergies(allergies: Dict[str, Any], user_language: str) -> str:
+    allergies = allergies or {}
+    drug = allergies.get("drug_allergy") or {}
+    food = allergies.get("food_allergy") or {}
+    other = allergies.get("other_allergy") or {}
+
+    lines: List[str] = []
+
+    if user_language == "ar":
+        if _is_yes(drug.get("has")):
+            lines.append(f"- حساسية دواء: نعم ({_value_or_na(drug.get('details'), user_language)})")
+        if _is_yes(food.get("has")):
+            lines.append(f"- حساسية طعام: نعم ({_value_or_na(food.get('details'), user_language)})")
+        if _is_yes(other.get("has")):
+            lines.append(f"- حساسية أخرى: نعم ({_value_or_na(other.get('details'), user_language)})")
+        if not lines:
+            lines.append("- لا توجد حساسية مسجلة في ملف Odoo.")
+        return "\n".join(lines)
+
+    if _is_yes(drug.get("has")):
+        lines.append(f"- Drug allergy: Yes ({_value_or_na(drug.get('details'), user_language)})")
+    if _is_yes(food.get("has")):
+        lines.append(f"- Food allergy: Yes ({_value_or_na(food.get('details'), user_language)})")
+    if _is_yes(other.get("has")):
+        lines.append(f"- Other allergy: Yes ({_value_or_na(other.get('details'), user_language)})")
+    if not lines:
+        lines.append("- No allergy recorded in the Odoo file.")
+    return "\n".join(lines)
+
+
+def _render_chronic_conditions(chronic: Dict[str, Any], user_language: str) -> str:
+    chronic = chronic or {}
+
+    labels = {
+        "ar": {
+            "diabetes": "السكري",
+            "hypertension": "ارتفاع ضغط الدم",
+            "heart_diseases": "أمراض القلب",
+            "cancer": "السرطان",
+            "chronic_kidney_disease": "مرض الكلى المزمن",
+            "chronic_respiratory_diseases": "أمراض الجهاز التنفسي المزمنة",
+            "arthritis": "التهاب المفاصل",
+        },
+        "en": {
+            "diabetes": "Diabetes",
+            "hypertension": "Hypertension",
+            "heart_diseases": "Heart diseases",
+            "cancer": "Cancer",
+            "chronic_kidney_disease": "Chronic kidney disease",
+            "chronic_respiratory_diseases": "Chronic respiratory diseases",
+            "arthritis": "Arthritis",
+        },
+    }
+
+    lang_labels = labels["ar"] if user_language == "ar" else labels["en"]
+
+    present = [label for key, label in lang_labels.items() if chronic.get(key)]
+
+    if chronic.get("other_chronic_condition"):
+        specific = chronic.get("specific_chronic_condition")
+        if specific:
+            present.append(str(specific))
+        else:
+            present.append("مرض مزمن آخر" if user_language == "ar" else "Other chronic condition")
+
+    if not present:
+        return (
+            "- لا توجد أمراض مزمنة مسجلة في ملف Odoo."
+            if user_language == "ar"
+            else "- No chronic conditions recorded in the Odoo file."
+        )
+
+    return "\n".join(f"- {item}" for item in present)
+
+
+def _render_medications(medications: List[Dict[str, Any]], user_language: str) -> str:
+    medications = medications or []
+
+    if not medications:
+        return (
+            "- لا توجد أدوية مسجلة في ملف Odoo."
+            if user_language == "ar"
+            else "- No medications recorded in the Odoo file."
+        )
+
+    lines: List[str] = []
+
+    for medication in medications:
+        name = medication.get("name") or ("دواء غير معروف" if user_language == "ar" else "Unknown medicine")
+        segments = [f"- {name}"]
+
+        if user_language == "ar":
+            if medication.get("route"):
+                segments.append(f"الطريق: {medication['route']}")
+            if medication.get("dose"):
+                dose = str(medication["dose"])
+                if medication.get("unit"):
+                    dose += f" {medication['unit']}"
+                segments.append(f"الجرعة: {dose}")
+            if medication.get("frequency_type"):
+                freq = str(medication["frequency_type"])
+                if medication.get("times_per_day"):
+                    freq += f" ({medication['times_per_day']} مرات/يوم)"
+                segments.append(f"التكرار: {freq}")
+            if medication.get("duration"):
+                period = medication.get("duration_period") or ""
+                segments.append(f"المدة: {medication['duration']} {period}".strip())
+            if medication.get("start_date") or medication.get("end_date"):
+                segments.append(
+                    f"من {medication.get('start_date') or '—'} إلى {medication.get('end_date') or '—'}"
+                )
+            if medication.get("indication"):
+                segments.append(f"دواعي الاستعمال: {medication['indication']}")
+            if medication.get("state"):
+                segments.append(f"الحالة: {medication['state']}")
+        else:
+            if medication.get("route"):
+                segments.append(f"Route: {medication['route']}")
+            if medication.get("dose"):
+                dose = str(medication["dose"])
+                if medication.get("unit"):
+                    dose += f" {medication['unit']}"
+                segments.append(f"Dose: {dose}")
+            if medication.get("frequency_type"):
+                freq = str(medication["frequency_type"])
+                if medication.get("times_per_day"):
+                    freq += f" ({medication['times_per_day']}/day)"
+                segments.append(f"Frequency: {freq}")
+            if medication.get("duration"):
+                period = medication.get("duration_period") or ""
+                segments.append(f"Duration: {medication['duration']} {period}".strip())
+            if medication.get("start_date") or medication.get("end_date"):
+                segments.append(
+                    f"From {medication.get('start_date') or '—'} to {medication.get('end_date') or '—'}"
+                )
+            if medication.get("indication"):
+                segments.append(f"Indication: {medication['indication']}")
+            if medication.get("state"):
+                segments.append(f"State: {medication['state']}")
+
+        lines.append(" | ".join(segments))
+
+    return "\n".join(lines)
+
+
 def _build_patient_readable_context(
     patient_context: Dict[str, Any],
     user_language: str,
@@ -443,6 +592,17 @@ def _build_patient_readable_context(
     last_treatment_plan = clinical.get("last_treatment_plan") or {}
     last_visit_summary = clinical.get("last_visit_summary") or {}
 
+    allergies = patient_context.get("allergies") or {}
+    chronic = patient_context.get("chronic_conditions") or {}
+
+    medications = patient_context.get("active_medications")
+    if not medications:
+        medications = patient_context.get("medications") or []
+
+    allergies_text = _render_allergies(allergies, user_language)
+    chronic_text = _render_chronic_conditions(chronic, user_language)
+    medications_text = _render_medications(medications, user_language)
+
     if user_language == "ar":
         return f"""
 سياق المريض الحالي من Odoo:
@@ -455,6 +615,9 @@ def _build_patient_readable_context(
 - العمر: {_value_or_na(identity.get("age"), user_language)}
 - الجنس: {_value_or_na(identity.get("sex"), user_language)}
 - فصيلة الدم: {_value_or_na(identity.get("blood_type"), user_language)}
+- تاريخ الميلاد: {_value_or_na(identity.get("dob"), user_language)}
+- الجنسية: {_value_or_na(identity.get("nationality"), user_language)}
+- الحالة الاجتماعية: {_value_or_na(identity.get("marital_status"), user_language)}
 - حالة الملف: {_value_or_na(identity.get("state"), user_language)}
 - حالة المريض: {_value_or_na(identity.get("patient_condition"), user_language)}
 - منوم حالياً: {_value_or_na(identity.get("patient_admitted"), user_language)}
@@ -478,6 +641,15 @@ def _build_patient_readable_context(
 - آخر خطة علاجية: {_value_or_na(last_treatment_plan.get("value"), user_language)}، التاريخ: {_value_or_na(last_treatment_plan.get("date"), user_language)}
 - آخر ملخص زيارة: {_value_or_na(last_visit_summary.get("value"), user_language)}، التاريخ: {_value_or_na(last_visit_summary.get("date"), user_language)}
 
+الحساسية:
+{allergies_text}
+
+الأمراض المزمنة:
+{chronic_text}
+
+الأدوية الحالية (Active):
+{medications_text}
+
 بيانات الطوارئ:
 - الاسم: {_value_or_na(emergency.get("name"), user_language)}
 - الجوال: {_value_or_na(emergency.get("mobile"), user_language)}
@@ -488,6 +660,9 @@ def _build_patient_readable_context(
 - عندما يسأل عن "النبض"، المقصود معدل نبض القلب.
 - عندما يسأل عن "الأكسجين"، المقصود نسبة تشبع الأكسجين.
 - عندما يسأل عن "السكر"، المقصود glycemia.
+- عندما يسأل عن "الأدوية" أو "الدوا" أو "العلاج"، استخدم قسم الأدوية الحالية.
+- عندما يسأل عن "الحساسية"، استخدم قسم الحساسية.
+- عندما يسأل عن "الأمراض المزمنة" أو "التاريخ المرضي"، استخدم قسم الأمراض المزمنة.
 """.strip()
 
     return f"""
@@ -501,6 +676,9 @@ Identity:
 - Age: {_value_or_na(identity.get("age"), user_language)}
 - Sex: {_value_or_na(identity.get("sex"), user_language)}
 - Blood type: {_value_or_na(identity.get("blood_type"), user_language)}
+- Date of birth: {_value_or_na(identity.get("dob"), user_language)}
+- Nationality: {_value_or_na(identity.get("nationality"), user_language)}
+- Marital status: {_value_or_na(identity.get("marital_status"), user_language)}
 - File state: {_value_or_na(identity.get("state"), user_language)}
 - Patient condition: {_value_or_na(identity.get("patient_condition"), user_language)}
 - Admitted status: {_value_or_na(identity.get("patient_admitted"), user_language)}
@@ -524,6 +702,15 @@ Clinical context:
 - Last treatment plan: {_value_or_na(last_treatment_plan.get("value"), user_language)}, date: {_value_or_na(last_treatment_plan.get("date"), user_language)}
 - Last visit summary: {_value_or_na(last_visit_summary.get("value"), user_language)}, date: {_value_or_na(last_visit_summary.get("date"), user_language)}
 
+Allergies:
+{allergies_text}
+
+Chronic conditions:
+{chronic_text}
+
+Current medications (Active):
+{medications_text}
+
 Emergency contact:
 - Name: {_value_or_na(emergency.get("name"), user_language)}
 - Mobile: {_value_or_na(emergency.get("mobile"), user_language)}
@@ -534,6 +721,9 @@ Interpretation notes:
 - If the user asks about "pulse", use heart rate.
 - If the user asks about "oxygen", use oxygen saturation.
 - If the user asks about "blood sugar", use glycemia.
+- If the user asks about "medications", "meds", "drugs" or "treatment", use the current medications section.
+- If the user asks about "allergy" or "allergies", use the allergies section.
+- If the user asks about "chronic diseases" or "medical history", use the chronic conditions section.
 """.strip()
 
 def _build_patient_direct_prompt(

@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 from integrations.odoo.client import OdooClient
+from integrations.odoo.medications import OdooMedicationService
 
 
 PATIENT_MODEL = "sm.patient"
@@ -28,9 +29,15 @@ PATIENT_DETAIL_FIELDS = [
     "reference",
     "ssn",
     "mobile",
+    "phone",
     "email",
     "age",
+    "dob",
     "sex",
+    "marital_status",
+    "country_id",
+    "age_category",
+    "deceased",
     "state",
     "patient_admitted",
     "patient_condition",
@@ -46,6 +53,23 @@ PATIENT_DETAIL_FIELDS = [
     "last_treatment_plan_date",
     "last_visit_summary",
     "last_visit_summary_date",
+    "has_allergy",
+    "has_drug_allergy",
+    "drug_allergy_content",
+    "has_food_allergy",
+    "food_allergy_content",
+    "has_other_allergy",
+    "other_allergy_content",
+    "has_chronic_conditions",
+    "diabetes",
+    "hypertension",
+    "heart_diseases",
+    "cancer",
+    "chronic_kidney_disease",
+    "chronic_respiratory_diseases",
+    "arthritis",
+    "other_chronic_condition",
+    "specific_chronic_condition",
 ]
 
 
@@ -100,9 +124,16 @@ def _clean_record(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _name_of(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value.get("name")
+    return value
+
+
 class OdooPatientService:
     def __init__(self):
         self.client = OdooClient()
+        self.medication_service = OdooMedicationService(self.client)
 
     def search_patient(
         self,
@@ -164,6 +195,16 @@ class OdooPatientService:
 
         return _clean_record(records[0])
 
+    def get_patient_medications(
+        self,
+        patient_id: int,
+        only_active: bool = False,
+    ) -> List[Dict[str, Any]]:
+        return self.medication_service.get_patient_medications(
+            patient_id=patient_id,
+            only_active=only_active,
+        )
+
     def get_patient_record(
         self,
         patient_id: int,
@@ -192,6 +233,8 @@ class OdooPatientService:
             "profile": self._extract_profile(record),
             "latest_vitals": self._extract_latest_vitals(record),
             "clinical_context": self._extract_clinical_context(record),
+            "allergies": self._extract_allergies(record),
+            "chronic_conditions": self._extract_chronic_conditions(record),
             "emergency_contact": self._extract_emergency_contact(record),
             "available_fields": list(record.keys()),
             "raw_record": record,
@@ -213,10 +256,25 @@ class OdooPatientService:
         if not summary:
             return None
 
+        try:
+            medications = self.get_patient_medications(patient_id)
+        except Exception:
+            medications = []
+
+        active_medications = [
+            medication
+            for medication in medications
+            if medication.get("state") == "active"
+        ]
+
         return {
             "patient_identity": summary.get("profile"),
             "latest_vitals": summary.get("latest_vitals"),
             "clinical_context": summary.get("clinical_context"),
+            "allergies": summary.get("allergies"),
+            "chronic_conditions": summary.get("chronic_conditions"),
+            "medications": medications,
+            "active_medications": active_medications,
             "emergency_contact": summary.get("emergency_contact"),
             "source": {
                 "system": "odoo",
@@ -225,7 +283,8 @@ class OdooPatientService:
             },
             "limitations": [
                 "Only fields configured in this service are available.",
-                "If medication, lab results, allergies, or appointments are stored in separate Odoo models, add dedicated service methods for them.",
+                "Lab results, investigations and appointments are not exposed yet.",
+                "Diagnoses and treatment plans are exposed as last value only, not full history.",
             ],
         }
 
@@ -253,9 +312,15 @@ class OdooPatientService:
             "reference": record.get("reference"),
             "ssn": record.get("ssn"),
             "mobile": record.get("mobile"),
+            "phone": record.get("phone"),
             "email": record.get("email"),
             "age": record.get("age"),
+            "dob": record.get("dob"),
             "sex": record.get("sex"),
+            "marital_status": record.get("marital_status"),
+            "nationality": _name_of(record.get("country_id")),
+            "age_category": record.get("age_category"),
+            "deceased": record.get("deceased"),
             "state": record.get("state"),
             "patient_admitted": record.get("patient_admitted"),
             "patient_condition": record.get("patient_condition"),
@@ -322,6 +387,43 @@ class OdooPatientService:
                 "value": record.get("last_visit_summary"),
                 "date": record.get("last_visit_summary_date"),
             },
+        }
+
+    def _extract_allergies(
+        self,
+        record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "has_allergy": record.get("has_allergy"),
+            "drug_allergy": {
+                "has": record.get("has_drug_allergy"),
+                "details": record.get("drug_allergy_content"),
+            },
+            "food_allergy": {
+                "has": record.get("has_food_allergy"),
+                "details": record.get("food_allergy_content"),
+            },
+            "other_allergy": {
+                "has": record.get("has_other_allergy"),
+                "details": record.get("other_allergy_content"),
+            },
+        }
+
+    def _extract_chronic_conditions(
+        self,
+        record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "has_chronic_conditions": record.get("has_chronic_conditions"),
+            "diabetes": record.get("diabetes"),
+            "hypertension": record.get("hypertension"),
+            "heart_diseases": record.get("heart_diseases"),
+            "cancer": record.get("cancer"),
+            "chronic_kidney_disease": record.get("chronic_kidney_disease"),
+            "chronic_respiratory_diseases": record.get("chronic_respiratory_diseases"),
+            "arthritis": record.get("arthritis"),
+            "other_chronic_condition": record.get("other_chronic_condition"),
+            "specific_chronic_condition": record.get("specific_chronic_condition"),
         }
 
     def _extract_emergency_contact(
